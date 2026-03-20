@@ -104,6 +104,8 @@ jobs:
           PROXY_URL: ${{ secrets.PROXY_URL }}
           PROXY_AUTH: ${{ secrets.PROXY_AUTH }}
           PROXY_AUTH_LIST: ${{ secrets.PROXY_AUTH_LIST }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SCRAPY_LOG_LEVEL: INFO
           SCRAPY_RETRY_TIMES: "5"
           SCRAPY_DOWNLOAD_TIMEOUT: "45"
