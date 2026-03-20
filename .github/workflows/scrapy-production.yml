@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       spider_names:
-        description: "Comma-separated spider names. Example: bamarv,alrvsales,fraserway"
+        description: "Comma-separated spider names. Example: bamarv,alrvsales,fraserway (leave blank to run all)"
         required: false
-        default: "bamarv,alrvsales,fraserway"
+        default: ""
       fail_fast:
         description: "If true, cancel remaining spider jobs after first failure. Example: true"
         required: false
@@ -66,11 +66,7 @@ jobs:
                   raise SystemExit(f"Unknown spider(s): {', '.join(missing)}")
               spiders = selected
           else:
-              spiders = ["bamarv", "alrvsales", "fraserway"]
-
-          missing = [s for s in spiders if s not in available]
-          if missing:
-              raise SystemExit(f"Configured spider(s) not found in project: {', '.join(missing)}")
+              spiders = available
 
           if not spiders:
               raise SystemExit("No spiders found.")
