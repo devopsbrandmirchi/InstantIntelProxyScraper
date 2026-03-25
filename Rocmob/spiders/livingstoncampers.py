@@ -1,11 +1,10 @@
 import scrapy
 import hashlib
 import json
-import os
 from datetime import datetime, timezone
 from scrapy.selector import Selector
 from scrapy.http import Request
-from supabase import create_client
+from Rocmob.rocmob_cfg import supabase
 
 
 class LivingstoncampersSpider(scrapy.Spider):
@@ -27,13 +26,6 @@ class LivingstoncampersSpider(scrapy.Spider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.creation_date = datetime.now(timezone.utc).date().isoformat()
-        supabase_url = os.getenv("SUPABASE_URL", "").strip()
-        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-        if not supabase_url or not supabase_key:
-            raise RuntimeError(
-                "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variable."
-            )
-        self.supabase = create_client(supabase_url, supabase_key)
 
     def _listing_headers(self):
         return {
@@ -237,7 +229,7 @@ class LivingstoncampersSpider(scrapy.Spider):
         }
 
         try:
-            self.supabase.table("scrap_rawdata").upsert(row, on_conflict="sk,creation_date").execute()
+            supabase.table("scrap_rawdata").upsert(row, on_conflict="sk,creation_date").execute()
             self.logger.info("Upserted: %s", title)
         except Exception as e:
             self.logger.error("Supabase error for %s: %s", url, e)

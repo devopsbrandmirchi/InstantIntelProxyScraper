@@ -113,10 +113,35 @@ class ProxyMiddleware(object):
     @classmethod
     def from_crawler(cls, crawler):
         settings = crawler.settings
-        return cls(
+        mw = cls(
             enabled=settings.getbool("ENABLE_PROXY", True),
             proxy_url=settings.get("PROXY_URL", "").strip(),
             proxy_auth_list=settings.getlist("HTTP_PROXY"),
+        )
+        crawler.signals.connect(mw.spider_opened, signal=signals.spider_opened)
+        return mw
+
+    def spider_opened(self, spider):
+        if not self.enabled:
+            spider.logger.info(
+                "ProxyMiddleware: proxy disabled (ENABLE_PROXY=false); outbound requests are direct."
+            )
+            return
+        if not self.proxy_url:
+            spider.logger.warning(
+                "ProxyMiddleware: proxy enabled but PROXY_URL is empty; outbound requests are direct."
+            )
+            return
+        auth_note = (
+            "with Proxy-Authorization (rotating credentials)"
+            if self.proxy_auth_list
+            else "without credentials (no PROXY_AUTH / PROXY_AUTH_LIST)"
+        )
+        spider.logger.info(
+            "ProxyMiddleware: proxy enabled for spider %r; endpoint %s; %s",
+            spider.name,
+            self.proxy_url,
+            auth_note,
         )
 
     def process_request(self, request, spider):
