@@ -3,10 +3,15 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from dotenv import load_dotenv
 from supabase import Client, create_client
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv:
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 def _require_env(name: str) -> str:
