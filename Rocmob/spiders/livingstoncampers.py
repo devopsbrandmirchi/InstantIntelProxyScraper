@@ -4,7 +4,6 @@ import json
 from datetime import datetime, timezone
 from scrapy.selector import Selector
 from scrapy.http import Request
-from Rocmob.rocmob_cfg import supabase
 
 
 class LivingstoncampersSpider(scrapy.Spider):
@@ -229,6 +228,8 @@ class LivingstoncampersSpider(scrapy.Spider):
         }
 
         try:
+            from Rocmob.rocmob_cfg import supabase
+
             supabase.table("scrap_rawdata").upsert(row, on_conflict="sk,creation_date").execute()
             self.logger.info("Upserted: %s", title)
         except Exception as e:
