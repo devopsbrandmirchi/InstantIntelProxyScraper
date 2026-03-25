@@ -38,28 +38,58 @@ class LivingstoncampersSpider(scrapy.Spider):
             "Sec-Fetch-Site": "same-origin",
         }
 
+    def _listing_headers_fallback(self):
+        return {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": self._SEARCH_PAGE + "?s=true",
+            "Origin": "https://www.livingstoncampersales.com",
+            "X-Requested-With": "XMLHttpRequest",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+        }
+
     def start_requests(self):
         # Load search page first (cookies/session) then hit rebraco JSON like the site’s AJAX does.
         yield scrapy.Request(
             self._SEARCH_PAGE,
             callback=self._after_search_page,
+            meta={"handle_httpstatus_all": True},
             dont_filter=True,
         )
 
     def _after_search_page(self, response):
         if response.status != 200:
-            self.logger.error(
-                "Livingston: search page HTTP %s — cannot load inventory API",
+            self.logger.warning(
+                "Livingston: search page HTTP %s. Trying listing API directly.",
                 response.status,
             )
-            return
         yield scrapy.Request(
             self._LISTING_URL,
             callback=self.parse,
             headers=self._listing_headers(),
+            meta={"handle_httpstatus_all": True},
         )
 
     def parse(self, response):
+        if response.status == 403 and not response.meta.get("listing_retry_once"):
+            self.logger.warning(
+                "Livingston listing API returned 403. Retrying same URL once with fallback headers."
+            )
+            retry_meta = dict(response.meta)
+            retry_meta["listing_retry_once"] = True
+            retry_meta["handle_httpstatus_all"] = True
+            yield Request(
+                response.url,
+                callback=self.parse,
+                headers=self._listing_headers_fallback(),
+                meta=retry_meta,
+                dont_filter=True,
+            )
+            return
         if response.status != 200:
             self.logger.error(
                 "Livingston listing API HTTP %s for %s — body preview: %s",
