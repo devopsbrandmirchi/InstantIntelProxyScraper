@@ -7,6 +7,11 @@ on:
         description: "Comma-separated spider names. Example: bamarv,alrvsales,fraserway (leave blank to run all)"
         required: false
         default: ""
+      use_proxy:
+        description: "Use proxy middleware during spider run"
+        required: false
+        default: true
+        type: boolean
       fail_fast:
         description: "If true, cancel remaining spider jobs after first failure. Example: true"
         required: false
@@ -100,7 +105,7 @@ jobs:
 
       - name: Run spider
         env:
-          ENABLE_PROXY: "true"
+          ENABLE_PROXY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.use_proxy || 'true' }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
           PROXY_AUTH: ${{ secrets.PROXY_AUTH }}
           PROXY_AUTH_LIST: ${{ secrets.PROXY_AUTH_LIST }}
