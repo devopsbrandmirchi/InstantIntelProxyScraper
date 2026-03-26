@@ -1,27 +1,39 @@
-# EasyqScrapLive - Production Scrapy Setup
+# InstantIntelProxyScraper
 
-This repository is configured for production scraping with:
-
-- Scrapy spiders in `Rocmob/spiders`
-- Proxy-required execution (via environment/secrets)
-- GitHub Actions workflow with per-spider parallel matrix jobs
+Production Scrapy project for RV inventory scraping, proxy support, and Supabase upsert.
 
 ## Requirements
 
 - Python 3.11+
-- Scrapy (installed through `requirements.txt`)
-- Valid proxy credentials
+- Dependencies from `requirements.txt`
+- Supabase project credentials
+- Optional proxy credentials (recommended for anti-bot protected targets)
 
-## Proxy Configuration (Required)
+## Environment Variables
 
-The scraper reads proxy settings from environment variables:
+Copy `.env.example` to `.env` for local runs:
+
+```bash
+cp .env.example .env
+```
+
+Required for data writes:
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_KEY`, but service role is recommended)
+
+Proxy settings:
 
 - `ENABLE_PROXY` (`true`/`false`, default `true`)
-- `PROXY_URL` (example: `http://zproxy.lum-superproxy.io:22225/`)
+- `PROXY_URL` (example: `http://brd.superproxy.io:33335/`)
 - `PROXY_AUTH` (single credential: `username:password`)
 - `PROXY_AUTH_LIST` (optional rotation list, comma-separated)
 
-If `PROXY_AUTH_LIST` is set, credentials rotate per request.
+Runtime tuning:
+
+- `SCRAPY_LOG_LEVEL`
+- `SCRAPY_RETRY_TIMES`
+- `SCRAPY_DOWNLOAD_TIMEOUT`
 
 ## Local Run
 
@@ -31,56 +43,43 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Run all spiders:
+List spiders:
 
 ```bash
-python run_spiders.py
+python -m scrapy list
 ```
 
-Run selected spiders:
+Run one spider:
 
 ```bash
-python run_spiders.py --spiders spider_one,spider_two
+python -m scrapy crawl Livingston
 ```
 
-Run with timeout and fail-fast:
+## GitHub Actions
 
-```bash
-python run_spiders.py --spiders spider_one --timeout-seconds 1800 --fail-fast
-```
+Workflow: `.github/workflows/scrapy-production.yml`
 
-## GitHub Actions (Production)
+### Required repository secrets
 
-Workflow file:
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
 
-- `.github/workflows/scrapy-production.yml`
+### Optional proxy secrets
 
-### Add repository secrets
+- `PROXY_URL`
+- `PROXY_AUTH`
+- `PROXY_AUTH_LIST`
 
-In GitHub repo settings -> Secrets and variables -> Actions, add:
+### Manual run inputs
 
-- `PROXY_URL` (required)
-- `PROXY_AUTH` (recommended if using one account)
-- `PROXY_AUTH_LIST` (optional if rotating credentials)
+- `spider_names`: comma-separated spider names (blank = run all discovered spiders)
+- `use_proxy`: toggle proxy per run (`true`/`false`)
+- `fail_fast`: stop remaining matrix jobs after first failure
 
-### Manual run
-
-Use **Run workflow** and optionally provide:
-
-- `spider_names`: comma-separated spider names (example: `bamarv,alrvsales,fraserway`)
-- `fail_fast`: stop matrix early when one spider fails
-
-If you do not change `spider_names`, the fixed default list is used:
-
-- `bamarv,alrvsales,fraserway`
-
-### Scheduled run
-
-The workflow is scheduled with cron:
+### Schedule
 
 - `0 */6 * * *` (every 6 hours)
 
-## Notes
+## DigitalOcean deployment
 
-- Middleware supports `request.meta["skip_proxy"] = True` for requests that must bypass proxy.
-- Keep credentials in GitHub Secrets only; do not hardcode proxy auth in code.
+A complete setup guide is available in `docs/digitalocean-setup.md`.
