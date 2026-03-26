@@ -132,11 +132,12 @@ class ProxyMiddleware(object):
                 "ProxyMiddleware: proxy enabled but PROXY_URL is empty; outbound requests are direct."
             )
             return
-        auth_note = (
-            "with Proxy-Authorization (rotating credentials)"
-            if self.proxy_auth_list
-            else "without credentials (no PROXY_AUTH / PROXY_AUTH_LIST)"
-        )
+        if len(self.proxy_auth_list) > 1:
+            auth_note = "with Proxy-Authorization (rotating credentials)"
+        elif len(self.proxy_auth_list) == 1:
+            auth_note = "with Proxy-Authorization (single credential from PROXY_AUTH)"
+        else:
+            auth_note = "without credentials (no PROXY_AUTH / PROXY_AUTH_LIST)"
         spider.logger.info(
             "ProxyMiddleware: proxy enabled for spider %r; endpoint %s; %s",
             spider.name,
