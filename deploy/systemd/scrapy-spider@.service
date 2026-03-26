@@ -1,0 +1,13 @@
+[Unit]
+Description=Scrapy spider %i
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/scrappingproxy
+EnvironmentFile=/root/scrappingproxy/.env
+ExecStart=/root/scrappingproxy/.venv/bin/python -m scrapy crawl %i
+User=root
+Group=root
+StandardOutput=journal
+StandardError=journal
