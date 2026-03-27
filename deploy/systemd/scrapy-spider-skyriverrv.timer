@@ -1,9 +1,9 @@
 [Unit]
-Description=Run spider skyriverrv at 01:30 and 05:30 UTC
+Description=Run spider skyriverrv at 01:37 and 05:37 UTC
 
 [Timer]
-OnCalendar=*-*-* 01:30:00 UTC
-OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 01:37:00 UTC
+OnCalendar=*-*-* 05:37:00 UTC
 Unit=scrapy-spider@skyriverrv.service
 Persistent=true
 

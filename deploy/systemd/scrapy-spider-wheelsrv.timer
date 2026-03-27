@@ -1,9 +1,9 @@
 [Unit]
-Description=Run spider wheelsrv at 01:30 and 05:30 UTC
+Description=Run spider wheelsrv at 01:41 and 05:41 UTC
 
 [Timer]
-OnCalendar=*-*-* 01:30:00 UTC
-OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 01:41:00 UTC
+OnCalendar=*-*-* 05:41:00 UTC
 Unit=scrapy-spider@wheelsrv.service
 Persistent=true
 

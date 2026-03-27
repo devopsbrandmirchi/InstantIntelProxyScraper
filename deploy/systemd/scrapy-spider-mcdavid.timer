@@ -1,9 +1,9 @@
 [Unit]
-Description=Run spider mcdavid at 01:30 and 05:30 UTC
+Description=Run spider mcdavid at 01:21 and 05:21 UTC
 
 [Timer]
-OnCalendar=*-*-* 01:30:00 UTC
-OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 01:21:00 UTC
+OnCalendar=*-*-* 05:21:00 UTC
 Unit=scrapy-spider@mcdavid.service
 Persistent=true
 

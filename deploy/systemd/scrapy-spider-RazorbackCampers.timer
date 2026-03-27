@@ -1,9 +1,9 @@
 [Unit]
-Description=Run spider RazorbackCampers at 01:30 and 05:30 UTC
+Description=Run spider RazorbackCampers at 01:03 and 05:03 UTC
 
 [Timer]
-OnCalendar=*-*-* 01:30:00 UTC
-OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 01:03:00 UTC
+OnCalendar=*-*-* 05:03:00 UTC
 Unit=scrapy-spider@RazorbackCampers.service
 Persistent=true
 

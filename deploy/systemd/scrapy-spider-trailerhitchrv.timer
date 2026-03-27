@@ -1,9 +1,9 @@
 [Unit]
-Description=Run spider trailerhitchrv at 01:30 and 05:30 UTC
+Description=Run spider trailerhitchrv at 01:39 and 05:39 UTC
 
 [Timer]
-OnCalendar=*-*-* 01:30:00 UTC
-OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 01:39:00 UTC
+OnCalendar=*-*-* 05:39:00 UTC
 Unit=scrapy-spider@trailerhitchrv.service
 Persistent=true
 

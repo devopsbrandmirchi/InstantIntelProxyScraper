@@ -1,9 +1,9 @@
 [Unit]
-Description=Run spider moixrvsc at 01:30 and 05:30 UTC
+Description=Run spider moixrvsc at 01:27 and 05:27 UTC
 
 [Timer]
-OnCalendar=*-*-* 01:30:00 UTC
-OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 01:27:00 UTC
+OnCalendar=*-*-* 05:27:00 UTC
 Unit=scrapy-spider@moixrvsc.service
 Persistent=true
 

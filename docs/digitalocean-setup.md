@@ -89,7 +89,7 @@ StandardError=journal
 EOF
 ```
 
-Create one timer per spider with its own schedule. For this repo, starter timer files are included in `deploy/systemd/` and set to run at `01:30 UTC` and `05:30 UTC`.
+Create one timer per spider with its own schedule. For this repo, starter timer files are included in `deploy/systemd/` and are staggered across minutes between `01:01-01:41 UTC` and `05:01-05:41 UTC`.
 
 You can copy them directly:
 
@@ -103,11 +103,11 @@ Example timer structure:
 ```bash
 cat > /etc/systemd/system/scrapy-spider-Livingston.timer << 'EOF'
 [Unit]
-Description=Run spider Livingston at 01:30 and 05:30 UTC
+Description=Run spider Livingston at 01:01 and 05:01 UTC
 
 [Timer]
-OnCalendar=*-*-* 01:30:00 UTC
-OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 01:01:00 UTC
+OnCalendar=*-*-* 05:01:00 UTC
 Unit=scrapy-spider@Livingston.service
 Persistent=true
 

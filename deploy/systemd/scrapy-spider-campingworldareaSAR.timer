@@ -1,9 +1,9 @@
 [Unit]
-Description=Run spider campingworldareaSAR at 01:30 and 05:30 UTC
+Description=Run spider campingworldareaSAR at 01:13 and 05:13 UTC
 
 [Timer]
-OnCalendar=*-*-* 01:30:00 UTC
-OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 01:13:00 UTC
+OnCalendar=*-*-* 05:13:00 UTC
 Unit=scrapy-spider@campingworldareaSAR.service
 Persistent=true
 

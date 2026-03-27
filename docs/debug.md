@@ -90,7 +90,7 @@ systemctl restart scrapy-spider-Livingston.timer
 journalctl -u scrapy-spider@Livingston.service --since "today" --no-pager
 ```
 
-### Window around 01:30 UTC (adjust date)
+### Window around scheduled UTC time (adjust date)
 
 ```bash
 journalctl -u scrapy-spider@Livingston.service \
@@ -122,10 +122,36 @@ journalctl -u scrapy-spider@Livingston.service -n 100 --no-pager
 
 ## Schedule format (this repo)
 
-Timer files use **twice daily UTC**:
+Timer files use **twice daily UTC** and are staggered by spider minute:
 
-- `OnCalendar=*-*-* 01:30:00 UTC`
-- `OnCalendar=*-*-* 05:30:00 UTC`
+- `OnCalendar=*-*-* 01:MM:00 UTC`
+- `OnCalendar=*-*-* 05:MM:00 UTC`
+
+### Current stagger map
+
+| Spider name | UTC runs |
+|---|---|
+| `Livingston` | `01:01`, `05:01` |
+| `RazorbackCampers` | `01:03`, `05:03` |
+| `WadesRvJO` | `01:05`, `05:05` |
+| `campingworldareaFAR` | `01:07`, `05:07` |
+| `campingworldareaLIT` | `01:09`, `05:09` |
+| `campingworldareaLOW` | `01:11`, `05:11` |
+| `campingworldareaSAR` | `01:13`, `05:13` |
+| `claycooleyford` | `01:15`, `05:15` |
+| `crabtreerv` | `01:17`, `05:17` |
+| `funtownrvLR` | `01:19`, `05:19` |
+| `mcdavid` | `01:21`, `05:21` |
+| `moixrvhs` | `01:23`, `05:23` |
+| `moixrvmo` | `01:25`, `05:25` |
+| `moixrvsc` | `01:27`, `05:27` |
+| `rockyridgerv` | `01:29`, `05:29` |
+| `rohrmantoyota` | `01:31`, `05:31` |
+| `rvcitybiz` | `01:33`, `05:33` |
+| `rvcountry` | `01:35`, `05:35` |
+| `skyriverrv` | `01:37`, `05:37` |
+| `trailerhitchrv` | `01:39`, `05:39` |
+| `wheelsrv` | `01:41`, `05:41` |
 
 Server clock should be UTC or you must interpret logs accordingly (`timedatectl`).
 
