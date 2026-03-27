@@ -62,6 +62,7 @@ cd /root/scrappingproxy
 source .venv/bin/activate
 python -m scrapy list
 python -m scrapy crawl Livingston
+python -m scrapy crawl Livingston -s LOG_LEVEL=INFO
 ```
 
 ## 6) Run many spiders with systemd templates (recommended)
