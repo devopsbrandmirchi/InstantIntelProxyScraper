@@ -11,6 +11,7 @@ class WadesrvJoplinSpider(scrapy.Spider):
     name = "WadesRvJO"
 
     custom_settings = {
+        "ENABLE_PROXY": False,
         'DOWNLOAD_DELAY': 1,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 1,

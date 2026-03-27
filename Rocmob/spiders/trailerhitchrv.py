@@ -11,6 +11,7 @@ class TrailerhitchrvSpider(scrapy.Spider):
     name = "trailerhitchrv"
 
     custom_settings = {
+        "ENABLE_PROXY": False,
         'DOWNLOAD_DELAY': 1,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 1,

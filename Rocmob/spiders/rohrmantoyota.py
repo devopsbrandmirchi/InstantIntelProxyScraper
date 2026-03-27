@@ -10,6 +10,11 @@ from Rocmob.rocmob_cfg import supabase
 
 class Rohrmantoyota(scrapy.Spider):
     name = "rohrmantoyota"
+
+    custom_settings = {
+        "ENABLE_PROXY": False,
+    }
+
     start_urls = ['https://www.rohrmantoyota.com/searchall.aspx']
 
     def __init__(self, *args, **kwargs):

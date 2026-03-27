@@ -10,6 +10,10 @@ from Rocmob.rocmob_cfg import supabase
 class RazorbackcampersSpider(scrapy.Spider):
     name = "RazorbackCampers"
 
+    custom_settings = {
+        "ENABLE_PROXY": False,
+    }
+
     start_urls = ['https://www.razorbackcampersales.com/rebraco/unitlist/results?s=true&criteria=%7B%22HideLibrary%22%3Atrue%2C%22OnlyLibrary%22%3Afalse%2C%22UnitAgeFilter%22%3A0%2C%22InvertTagFilter%22%3Afalse%2C%22InvertTypeFilter%22%3Afalse%2C%22StatusId%22%3A%222%22%2C%22InvertManufacturerFilter%22%3Afalse%2C%22PriceFilters%22%3A%5B%5D%2C%22MonthlyPaymentsFilters%22%3A%5B%5D%2C%22PropVals%22%3A%7B%7D%2C%22ResultsSortString%22%3A%22price-asc%22%2C%22PageSize%22%3A24%2C%22PageNum%22%3A0%2C%22NoResultsPredetermined%22%3Afalse%2C%22IsCompact%22%3Afalse%7D&config=%7B%22PageId%22%3A395034%2C%22GlpForm%22%3A%221182%22%2C%22GlpForceForm%22%3A%221182%22%2C%22GlpNoPriceConfirm%22%3A1435%2C%22GlpPriceConfirm%22%3A1436%2C%22Slider%22%3Afalse%2C%22SliderPaused%22%3Afalse%2C%22VertSlider%22%3Afalse%2C%22VisibleSlides%22%3A3%2C%22IsCompact%22%3Afalse%2C%22Limit%22%3A0%2C%22SearchMode%22%3Afalse%2C%22DefaultSortMode%22%3A%22price-asc%22%2C%22UseFqdnUnitLinks%22%3Afalse%2C%22NumberOfSoldIfNoActive%22%3A0%2C%22NoResultsSnippetId%22%3A0%2C%22ShowSimilarUnitsIfNoResults%22%3Afalse%2C%22DefaultPageSize%22%3A24%2C%22ImageWidth%22%3A400%2C%22ImageHeight%22%3A0%2C%22NoPriceText%22%3A%22Call%20for%20price!%22%2C%22ShowPaymentsAround%22%3Afalse%2C%22ShowPaymentsAroundInCompactMode%22%3Afalse%2C%22DefaultToGridMode%22%3Afalse%2C%22DisableAjax%22%3Afalse%2C%22PriceTooltip%22%3A%22%22%2C%22FavoritesMode%22%3Afalse%2C%22ConsolidatedMode%22%3Afalse%7D']
 
     def __init__(self, *args, **kwargs):

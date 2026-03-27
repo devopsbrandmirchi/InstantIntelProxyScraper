@@ -18,6 +18,7 @@ class FuntownrvSpider(scrapy.Spider):
     }
 
     custom_settings = {
+        "ENABLE_PROXY": False,
         'RETRY_ENABLED': True,
         'RETRY_TIMES': 3,
         'RETRY_HTTP_CODES': [429],

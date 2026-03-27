@@ -12,6 +12,7 @@ class CrabtreervSpider(scrapy.Spider):
     name = "crabtreerv"
 
     custom_settings = {
+        "ENABLE_PROXY": False,
         'DOWNLOAD_DELAY': 3,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 1,

@@ -11,6 +11,7 @@ class WheelsrvSpider(scrapy.Spider):
     name = "wheelsrv"
 
     custom_settings = {
+        "ENABLE_PROXY": False,
         'DOWNLOAD_DELAY': 3,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
