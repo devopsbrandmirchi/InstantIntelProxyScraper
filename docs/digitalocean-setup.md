@@ -116,19 +116,20 @@ WantedBy=timers.target
 EOF
 ```
 
-Reload and enable:
+Reload and enable **all** spider timers (one `.timer` file per spider in `deploy/systemd/`):
 
 ```bash
 systemctl daemon-reload
-systemctl enable --now scrapy-spider-Livingston.timer
-systemctl enable --now scrapy-spider-mcdavid.timer
-systemctl enable --now scrapy-spider-moixrvhs.timer
-systemctl enable --now scrapy-spider-moixrvsc.timer
-systemctl enable --now scrapy-spider-moixrvmo.timer
+for unit in /etc/systemd/system/scrapy-spider-*.timer; do
+  [ -e "$unit" ] || continue
+  systemctl enable --now "$(basename "$unit")"
+done
 systemctl list-timers | grep scrapy-spider
 ```
 
-Create additional timer files for your other spiders (`scrapy-spider-<SpiderName>.timer`) and set each schedule as needed.
+To enable only some spiders, run `systemctl enable --now scrapy-spider-<SpiderName>.timer` for each.
+
+Create additional timer files for new spiders (`scrapy-spider-<SpiderName>.timer`) and set each schedule as needed.
 
 ## 7) Useful operations (debug + rerun)
 
