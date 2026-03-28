@@ -2,6 +2,45 @@
 
 Production Scrapy project for RV inventory scraping, proxy support, and Supabase upsert.
 
+## Repository structure
+
+```
+InstantIntelProxyScraper/
+├── scrapy.cfg                 # Scrapy project entry (points at Rocmob)
+├── requirements.txt           # Python deps (scrapy, supabase, python-dotenv, …)
+├── .env.example               # Template for local / droplet env vars (copy to .env)
+│
+├── Rocmob/                    # Scrapy project package
+│   ├── settings.py            # Global settings, proxy env, dotenv load
+│   ├── middlewares.py         # ProxyMiddleware (+ optional spider middleware)
+│   ├── rocmob_cfg.py          # Shared Supabase client (lazy init)
+│   ├── pipelines.py           # Item pipelines
+│   ├── items.py               # Scrapy item models
+│   ├── rocmob_query.py        # SQL/query helpers (legacy paths)
+│   ├── table_schema.py        # Table/schema reference
+│   └── spiders/               # One module per dealer / spider
+│       └── *.py               # Each file defines `name = "..."` for `scrapy crawl`
+│
+├── .github/workflows/
+│   └── scrapy-production.yml  # CI: list spiders matrix, run with secrets
+│
+├── deploy/systemd/
+│   ├── scrapy-spider@.service # Template unit: `scrapy crawl %i`
+│   └── scrapy-spider-*.timer  # Per-spider schedules (staggered UTC, see docs)
+│
+└── docs/
+    ├── digitalocean-setup.md  # Droplet: venv, .env, systemd copy/enable
+    └── debug.md               # journalctl, timers, env checks, stagger table
+```
+
+**Runtime flow (high level)**
+
+1. Environment: `.env` or process env supplies `SUPABASE_*` and optional `PROXY_*`.
+2. Scrapy loads `Rocmob/settings.py` → proxy middleware applies unless a spider sets `ENABLE_PROXY` false.
+3. Each spider crawls targets and upserts via `Rocmob/rocmob_cfg.py` → Supabase.
+4. **GitHub Actions**: install deps, `scrapy list` / `scrapy crawl` with repository secrets.
+5. **Droplet**: same code + venv; copy `deploy/systemd` units and enable timers (see `docs/digitalocean-setup.md`).
+
 ## Requirements
 
 - Python 3.11+
@@ -78,7 +117,7 @@ Workflow: `.github/workflows/scrapy-production.yml`
 
 ### Schedule
 
-- `0 */6 * * *` (every 6 hours)
+- Cron is optional in the workflow YAML. When enabled, a typical pattern is `0 */6 * * *` (every 6 hours). If the `schedule:` block is commented out, only manual **Run workflow** runs execute.
 
 ## DigitalOcean deployment
 
