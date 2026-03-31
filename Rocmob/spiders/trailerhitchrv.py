@@ -11,7 +11,13 @@ class TrailerhitchrvSpider(scrapy.Spider):
     name = "trailerhitchrv"
 
     custom_settings = {
-        "ENABLE_PROXY": False
+        "ENABLE_PROXY": False,
+        'DOWNLOAD_DELAY': 1,
+        'RANDOMIZE_DOWNLOAD_DELAY': True,
+        'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
+        'RETRY_ENABLED': True,
+        'RETRY_TIMES': 5,
+        'RETRY_HTTP_CODES': [429, 500, 502, 503, 504],
     }
 
     start_urls = ['https://www.trailerhitchrv.com/rebraco/unitlist/results?s=true&criteria=%7B%22HideLibrary%22%3Atrue%2C%22OnlyLibrary%22%3Afalse%2C%22UnitAgeFilter%22%3A0%2C%22InvertTagFilter%22%3Afalse%2C%22InvertTypeFilter%22%3Afalse%2C%22Lots%22%3A%22147%2C1674%22%2C%22StatusId%22%3A%222%22%2C%22InvertManufacturerFilter%22%3Afalse%2C%22PriceFilters%22%3A%5B%5D%2C%22MonthlyPaymentsFilters%22%3A%5B%5D%2C%22PropVals%22%3A%7B%7D%2C%22PageSize%22%3A50%2C%22PageNum%22%3A0%2C%22NoResultsPredetermined%22%3Afalse%2C%22IsCompact%22%3Afalse%7D&config=%7B%22PageId%22%3A13129%2C%22GlpForm%22%3A%22%7B%5Cn%20%20%5C%22formSnippetId%5C%22%3A%2013826%2C%5Cn%20%20%5C%22settings%5C%22%3A%20%5B%5D%5Cn%7D%22%2C%22GlpForceForm%22%3A%221182%22%2C%22GlpNoPriceConfirm%22%3A1435%2C%22GlpPriceConfirm%22%3A1436%2C%22Slider%22%3Afalse%2C%22SliderPaused%22%3Afalse%2C%22VertSlider%22%3Afalse%2C%22VisibleSlides%22%3A3%2C%22IsCompact%22%3Afalse%2C%22Limit%22%3A0%2C%22SearchMode%22%3Afalse%2C%22DefaultSortMode%22%3A%22%22%2C%22UseFqdnUnitLinks%22%3Afalse%2C%22NumberOfSoldIfNoActive%22%3A0%2C%22NoResultsSnippetId%22%3A0%2C%22ShowSimilarUnitsIfNoResults%22%3Afalse%2C%22DefaultPageSize%22%3A50%2C%22ImageWidth%22%3A400%2C%22ImageHeight%22%3A0%2C%22NoPriceText%22%3A%22Call%20Now%20For%20The%20Best%20Price%22%2C%22ShowPaymentsAround%22%3Afalse%2C%22ShowPaymentsAroundInCompactMode%22%3Afalse%2C%22DefaultToGridMode%22%3Atrue%2C%22DisableAjax%22%3Afalse%2C%22PriceTooltip%22%3A%22Due%20to%20manufacturer%20regulations%2C%20we%20cannot%20advertise%20below%20MSRP.%20Please%20call%20or%20submit%20a%20Get%20Best%20Price%20inquiry%20to%20receive%20your%20lowest%20price.%22%2C%22FavoritesMode%22%3Afalse%2C%22ConsolidatedMode%22%3Afalse%7D']
