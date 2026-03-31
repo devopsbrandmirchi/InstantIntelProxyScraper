@@ -11,6 +11,7 @@ From project directory with venv active:
 ```bash
 cd /root/scrappingproxy
 source .venv/bin/activate
+#git pull origin main
 python -m scrapy list
 python -m scrapy crawl Livingston
 python -m scrapy crawl Livingston -s LOG_LEVEL=INFO
