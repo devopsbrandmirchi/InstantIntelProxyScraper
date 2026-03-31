@@ -14,7 +14,8 @@ ENV/
 
 # Scrapy
 .scrapy/
-
+# Test spiders
+testspider/
 # Logs
 *.log
 logs/
