@@ -18,7 +18,8 @@ class KokomoHondaSpider(scrapy.Spider):
     allowed_domains = ["kokomohonda.com"]
 
     custom_settings = {
-        "ENABLE_PROXY": True,
+        "ENABLE_PROXY": False,
+        "HTTPERROR_ALLOWED_CODES": [403],
     }
 
     def __init__(self, *args, **kwargs):
@@ -29,35 +30,66 @@ class KokomoHondaSpider(scrapy.Spider):
             "INVENTORY_LISTING_DEFAULT_AUTO_ALL:inventory-data-bus1/getInventory"
         )
         self.page_size = 162
-        self.headers = {
+        self.api_headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             ),
             "Accept": "application/json, text/plain, */*",
-            "Referer": "https://www.kokomohonda.com/",
-            "Origin": "https://www.kokomohonda.com",
-            "X-Requested-With": "XMLHttpRequest",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.kokomohonda.com/new-inventory/index.htm",
+        }
+        self.homepage_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
         }
 
     def start_requests(self):
-        # Do not use google.com as bootstrap — Bright Data blocks SERP domains.
+        yield Request(
+            url="https://www.kokomohonda.com/new-inventory/index.htm",
+            headers=self.homepage_headers,
+            callback=self.after_session,
+            dont_filter=True,
+        )
+
+    def after_session(self, response):
+        self.logger.info(
+            "Kokomo Honda: session established (status %s); fetching inventory.",
+            response.status,
+        )
         yield self.make_request(0)
 
     def make_request(self, page_start):
         url = f"{self.base_url}?pageStart={page_start}&pageSize={self.page_size}"
         return Request(
             url=url,
-            headers=self.headers,
+            headers=self.api_headers,
             callback=self.parse_inventory,
             meta={"page_start": page_start},
+            dont_filter=True,
         )
 
     def parse_inventory(self, response):
+        if response.status == 403:
+            self.logger.error(
+                "Kokomo Honda: still 403 after session warm-up. "
+                "Body snippet: %s", response.text[:300]
+            )
+            return
+
         try:
             json_data = json.loads(response.text)
         except json.JSONDecodeError as e:
-            self.logger.error("Kokomo Honda: invalid JSON: %s", e)
+            self.logger.error(
+                "Kokomo Honda: invalid JSON: %s | body: %s", e, response.text[:200]
+            )
             return
 
         page_info = json_data.get("pageInfo") or {}

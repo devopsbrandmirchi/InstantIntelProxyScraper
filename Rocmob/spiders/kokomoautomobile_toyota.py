@@ -18,7 +18,7 @@ class KokomoToyotaSpider(scrapy.Spider):
     allowed_domains = ["kokomo-toyota.com"]
 
     custom_settings = {
-        "ENABLE_PROXY": True,
+        "ENABLE_PROXY": False,
         "HTTPERROR_ALLOWED_CODES": [403],  # so we can inspect 403 bodies
     }
 
