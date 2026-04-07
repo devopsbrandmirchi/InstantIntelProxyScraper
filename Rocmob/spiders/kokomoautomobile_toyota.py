@@ -19,6 +19,7 @@ class KokomoToyotaSpider(scrapy.Spider):
 
     custom_settings = {
         "ENABLE_PROXY": True,
+        "HTTPERROR_ALLOWED_CODES": [403],  # so we can inspect 403 bodies
     }
 
     def __init__(self, *args, **kwargs):
@@ -29,36 +30,68 @@ class KokomoToyotaSpider(scrapy.Spider):
             "INVENTORY_LISTING_DEFAULT_AUTO_ALL:inventory-data-bus1/getInventory"
         )
         self.page_size = 162
-        self.headers = {
+        # Minimal, browser-like headers — drop X-Requested-With and Origin
+        # which can trip CSRF checks on some Dealer.com deployments
+        self.api_headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             ),
             "Accept": "application/json, text/plain, */*",
-            "Referer": "https://www.kokomo-toyota.com/",
-            "Origin": "https://www.kokomo-toyota.com",
-            "X-Requested-With": "XMLHttpRequest",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.kokomo-toyota.com/new-inventory/index.htm",
+        }
+        self.homepage_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
         }
 
     def start_requests(self):
-        # Do not use google.com (or other SERP domains) as bootstrap — Bright Data
-        # often returns 403 "Forbidden serp domain" for those URLs.
+        # Step 1: Hit the inventory listing page first to collect cookies/session
+        yield Request(
+            url="https://www.kokomo-toyota.com/new-inventory/index.htm",
+            headers=self.homepage_headers,
+            callback=self.after_session,
+            dont_filter=True,
+        )
+
+    def after_session(self, response):
+        # Cookies are now set in the cookiejar — proceed to the API
+        self.logger.info(
+            "Kokomo Toyota: session established (status %s); fetching inventory.",
+            response.status,
+        )
         yield self.make_request(0)
 
     def make_request(self, page_start):
         url = f"{self.base_url}?pageStart={page_start}&pageSize={self.page_size}"
         return Request(
             url=url,
-            headers=self.headers,
+            headers=self.api_headers,
             callback=self.parse_inventory,
             meta={"page_start": page_start},
+            dont_filter=True,
         )
 
     def parse_inventory(self, response):
+        if response.status == 403:
+            self.logger.error(
+                "Kokomo Toyota: still 403 after session warm-up. "
+                "Body snippet: %s", response.text[:300]
+            )
+            return
+
         try:
             json_data = json.loads(response.text)
         except json.JSONDecodeError as e:
-            self.logger.error("Kokomo Toyota: invalid JSON: %s", e)
+            self.logger.error("Kokomo Toyota: invalid JSON: %s | body: %s", e, response.text[:200])
             return
 
         page_info = json_data.get("pageInfo") or {}
