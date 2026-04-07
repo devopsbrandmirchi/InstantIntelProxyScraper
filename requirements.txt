@@ -1,3 +1,5 @@
 scrapy
 supabase
 python-dotenv
+scrapy-playwright
+playwright

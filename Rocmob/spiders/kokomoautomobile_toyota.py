@@ -56,8 +56,7 @@ class KokomoToyotaSpider(scrapy.Spider):
     def start_requests(self):
         # Step 1: Hit the inventory listing page first to collect cookies/session
         yield Request(
-            url="https://www.kokomo-toyota.com/",
-            #url="https://www.kokomo-toyota.com/new-inventory/index.htm",
+            url="https://www.kokomo-toyota.com/new-inventory/index.htm",
             headers=self.homepage_headers,
             callback=self.after_session,
             dont_filter=True,
