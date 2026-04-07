@@ -1,0 +1,11 @@
+[Unit]
+Description=Run spider kokomoautomobiletoyota at 01:43 and 05:43 UTC
+
+[Timer]
+OnCalendar=*-*-* 01:43:00 UTC
+OnCalendar=*-*-* 05:43:00 UTC
+Unit=scrapy-spider@kokomoautomobiletoyota.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

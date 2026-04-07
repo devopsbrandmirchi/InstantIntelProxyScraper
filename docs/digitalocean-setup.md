@@ -89,7 +89,7 @@ StandardError=journal
 EOF
 ```
 
-Create one timer per spider with its own schedule. For this repo, starter timer files are included in `deploy/systemd/` and are staggered across minutes between `01:01-01:41 UTC` and `05:01-05:41 UTC`.
+Create one timer per spider with its own schedule. For this repo, starter timer files are included in `deploy/systemd/` and are staggered across minutes between `01:01-01:45 UTC` and `05:01-05:45 UTC`.
 
 You can copy them directly:
 

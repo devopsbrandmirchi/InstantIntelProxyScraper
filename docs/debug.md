@@ -153,6 +153,8 @@ Timer files use **twice daily UTC** and are staggered by spider minute:
 | `skyriverrv` | `01:37`, `05:37` |
 | `trailerhitchrv` | `01:39`, `05:39` |
 | `wheelsrv` | `01:41`, `05:41` |
+| `kokomoautomobiletoyota` | `01:43`, `05:43` |
+| `kokomoautomobilehonda` | `01:45`, `05:45` |
 
 Server clock should be UTC or you must interpret logs accordingly (`timedatectl`).
 
