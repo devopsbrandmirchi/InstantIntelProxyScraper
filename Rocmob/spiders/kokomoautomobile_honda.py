@@ -16,7 +16,6 @@ def _s(val):
 class KokomoHondaSpider(scrapy.Spider):
     name = "kokomoautomobilehonda"
     allowed_domains = ["kokomohonda.com"]
-    start_urls = ["https://www.google.com"]
 
     custom_settings = {
         "ENABLE_PROXY": True,
@@ -41,7 +40,8 @@ class KokomoHondaSpider(scrapy.Spider):
             "X-Requested-With": "XMLHttpRequest",
         }
 
-    def parse(self, response):
+    def start_requests(self):
+        # Do not use google.com as bootstrap — Bright Data blocks SERP domains.
         yield self.make_request(0)
 
     def make_request(self, page_start):
@@ -79,7 +79,9 @@ class KokomoHondaSpider(scrapy.Spider):
 
         for vehicle in vehicles:
             try:
-                row = self._vehicle_to_row(vehicle, response.url)
+                row = self._vehicle_to_row(
+                    vehicle, response.url, dealer_url, dealership_name
+                )
                 if not row:
                     continue
                 supabase.table("scrap_rawdata").upsert(
@@ -94,7 +96,7 @@ class KokomoHondaSpider(scrapy.Spider):
         if items_received > 0 and next_start < total_count:
             yield self.make_request(next_start)
 
-    def _vehicle_to_row(self, vehicle, response_url):
+    def _vehicle_to_row(self, vehicle, response_url, dealer_url, dealership_name):
         vin = _s(vehicle.get("vin"))
         year = _s(vehicle.get("modelYear"))
         make = _s(vehicle.get("make"))

@@ -16,7 +16,6 @@ def _s(val):
 class KokomoToyotaSpider(scrapy.Spider):
     name = "kokomoautomobiletoyota"
     allowed_domains = ["kokomo-toyota.com"]
-    start_urls = ["https://www.google.com"]
 
     custom_settings = {
         "ENABLE_PROXY": True,
@@ -41,7 +40,9 @@ class KokomoToyotaSpider(scrapy.Spider):
             "X-Requested-With": "XMLHttpRequest",
         }
 
-    def parse(self, response):
+    def start_requests(self):
+        # Do not use google.com (or other SERP domains) as bootstrap — Bright Data
+        # often returns 403 "Forbidden serp domain" for those URLs.
         yield self.make_request(0)
 
     def make_request(self, page_start):
@@ -75,7 +76,9 @@ class KokomoToyotaSpider(scrapy.Spider):
 
         for index, vehicle in enumerate(vehicles):
             try:
-                row = self._vehicle_to_row(vehicle, response.url, index)
+                row = self._vehicle_to_row(
+                    vehicle, response.url, index, dealer_url, dealership_name
+                )
                 if not row:
                     continue
                 supabase.table("scrap_rawdata").upsert(
@@ -90,7 +93,7 @@ class KokomoToyotaSpider(scrapy.Spider):
         if items_received > 0 and next_start < total_count:
             yield self.make_request(next_start)
 
-    def _vehicle_to_row(self, vehicle, response_url, index):
+    def _vehicle_to_row(self, vehicle, response_url, index, dealer_url, dealership_name):
         year = _s(vehicle.get("modelYear"))
         make = _s(vehicle.get("make"))
         model = _s(vehicle.get("model"))
