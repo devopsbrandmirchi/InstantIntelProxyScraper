@@ -19,7 +19,7 @@ class KokomoHondaSpider(scrapy.Spider):
     start_urls = ["https://www.google.com"]
 
     custom_settings = {
-        "ENABLE_PROXY": False,
+        "ENABLE_PROXY": True,
     }
 
     def __init__(self, *args, **kwargs):
