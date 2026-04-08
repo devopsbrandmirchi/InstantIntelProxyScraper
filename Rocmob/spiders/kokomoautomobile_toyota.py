@@ -9,224 +9,243 @@ from scrapy.http import Request
 from Rocmob.rocmob_cfg import supabase
 
 
-def _s(val):
-    return "" if val is None else str(val)
-
-
 class KokomoToyotaSpider(scrapy.Spider):
     name = "kokomoautomobiletoyota"
     allowed_domains = ["kokomo-toyota.com"]
+    
+    # --- PLAYWRIGHT FIX 1: Start at the actual homepage to get the security cookie ---
+    start_urls = ["https://www.kokomo-toyota.com/"]
 
+    # --- PLAYWRIGHT FIX 2: Enable the real browser engine ---
     custom_settings = {
+        'DOWNLOAD_HANDLERS': {
+            "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+            "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+        },
+        'TWISTED_REACTOR': "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
+        'PLAYWRIGHT_BROWSER_TYPE': 'chromium',
+        'DOWNLOAD_DELAY': 2,
+        'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
         "ENABLE_PROXY": False,
-        "HTTPERROR_ALLOWED_CODES": [403],  # so we can inspect 403 bodies
     }
 
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.creation_date = datetime.now(timezone.utc).date().isoformat()
-        self.base_url = (
-            "https://www.kokomo-toyota.com/apis/widget/"
-            "INVENTORY_LISTING_DEFAULT_AUTO_ALL:inventory-data-bus1/getInventory"
-        )
+        super(KokomoToyotaSpider, self).__init__(*args, **kwargs)
+        self.base_url = "https://www.kokomo-toyota.com/apis/widget/INVENTORY_LISTING_DEFAULT_AUTO_ALL:inventory-data-bus1/getInventory"
         self.page_size = 162
-        # Minimal, browser-like headers — drop X-Requested-With and Origin
-        # which can trip CSRF checks on some Dealer.com deployments
-        self.api_headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.kokomo-toyota.com/new-inventory/index.htm",
-        }
-        self.homepage_headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9,"
-                "image/avif,image/webp,*/*;q=0.8"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-        }
+        
+        # Supabase specific fields
+        self.creation_date = datetime.now(timezone.utc).date().isoformat()
+        self.inserted_count = 0
 
+    # --- PLAYWRIGHT FIX 3: Open the browser and lock in a session ---
     def start_requests(self):
-        # Step 1: Hit the inventory listing page first to collect cookies/session
-        yield Request(
-            url="https://www.kokomo-toyota.com/new-inventory/index.htm",
-            headers=self.homepage_headers,
-            callback=self.after_session,
-            dont_filter=True,
-        )
+        self.logger.info("🚀 Starting Kokomo Toyota Spider...")
+        for url in self.start_urls:
+            self.logger.info(f"🌐 Navigating to homepage to grab security cookies 🍪...")
+            yield Request(
+                url,
+                meta={
+                    "playwright": True,
+                    "playwright_context": "toyota_session", # This keeps the cookie alive
+                },
+                callback=self.parse
+            )
 
-    def after_session(self, response):
-        # Cookies are now set in the cookiejar — proceed to the API
-        self.logger.info(
-            "Kokomo Toyota: session established (status %s); fetching inventory.",
-            response.status,
-        )
+    def parse(self, response):
+        self.logger.info("🎭 Playwright successfully bypassed security! Real cookies acquired. Fetching API 📦...")
         yield self.make_request(0)
 
     def make_request(self, page_start):
         url = f"{self.base_url}?pageStart={page_start}&pageSize={self.page_size}"
+        self.logger.info(f"📡 Requesting API Page Start: {page_start}...")
+        
+        # --- PLAYWRIGHT FIX 4: Use the same browser session for the API call ---
         return Request(
-            url=url,
-            headers=self.api_headers,
-            callback=self.parse_inventory,
-            meta={"page_start": page_start},
+            url=url, 
+            callback=self.parse_inventory, 
             dont_filter=True,
+            meta={
+                'page_start': page_start,
+                "playwright": True,
+                "playwright_context": "toyota_session"
+            }
         )
 
     def parse_inventory(self, response):
-        if response.status == 403:
-            self.logger.error(
-                "Kokomo Toyota: still 403 after session warm-up. "
-                "Body snippet: %s", response.text[:300]
-            )
-            return
+        vehicles = []
+        total_count = 0
+        current_start = 0
 
         try:
-            json_data = json.loads(response.text)
-        except json.JSONDecodeError as e:
-            self.logger.error("Kokomo Toyota: invalid JSON: %s | body: %s", e, response.text[:200])
-            return
+            # --- PLAYWRIGHT FIX 5: Safely extract JSON if Playwright wraps it in HTML ---
+            raw_text = response.css('pre::text').get() or response.text
+            json_data = json.loads(raw_text)
+            
+            page_info = json_data.get("pageInfo", {})
+            total_count = page_info.get("totalCount", 0)
+            vehicles = page_info.get("trackingData", [])
+            
+            server_page_start = page_info.get("pageStart", 0)
+            requested_start = response.meta.get("page_start", 0)
 
-        page_info = json_data.get("pageInfo") or {}
-        total_count = page_info.get("totalCount", 0)
-        vehicles = page_info.get("trackingData") or []
-        server_page_start = page_info.get("pageStart", 0)
-        requested_start = response.meta.get("page_start", 0)
+            self.logger.info(f"📊 API Response: {len(vehicles)} vehicles found in this batch (Target Total: {total_count}).")
 
-        if requested_start != 0 and server_page_start == 0:
-            self.logger.info("Kokomo Toyota: server reset pageStart to 0; stopping pagination.")
-            return
+            # DUPLICATE PROTECTION
+            if requested_start != 0 and server_page_start == 0:
+                self.logger.warning("🛑 Server reset pageStart to 0. Stopping pagination to avoid infinite loops.")
+                return
 
-        dealer_url = "https://www.kokomo-toyota.com/"
-        dealership_name = "Kokomo Auto World Toyota"
+            for index, vehicle in enumerate(vehicles):
+                try:
+                    # --- 1. EXTRACT DATA ---
+                    year = vehicle.get("modelYear", "")
+                    make = vehicle.get("make", "")
+                    model = vehicle.get("model", "")
+                    stock_no = vehicle.get("stockNumber", "")
+                    vin = vehicle.get("vin", "")
+                    link = vehicle.get("link", "")
+                    
+                    # --- 2. CRITICAL FIX: FIND MISSING VIN IN LINK ---
+                    if not vin and link:
+                        match = re.search(r'[A-HJ-NPR-Z0-9]{17}', link.upper())
+                        if match:
+                            vin = match.group(0)
+                            self.logger.info(f"🕵️‍♂️ Recovered missing VIN from link URL: {vin}")
 
-        for index, vehicle in enumerate(vehicles):
-            try:
-                row = self._vehicle_to_row(
-                    vehicle, response.url, index, dealer_url, dealership_name
-                )
-                if not row:
+                    # --- 3. GENERATE UNIQUE ID (SK) ---
+                    title = f"{year} {make} {model}".strip()
+                    if link and not str(link).startswith("http"):
+                        link = f"https://www.kokomo-toyota.com{link}"
+
+                    unique_string = f"{vin}{stock_no}{title}{response.url}{index}"
+                    sk = hashlib.md5(unique_string.encode('utf-8')).hexdigest()
+
+                    # --- 4. FINAL FALLBACK FOR VIN ---
+                    if not vin:
+                        vin = f"TEMP-{stock_no if stock_no else sk[:10]}"
+                        self.logger.warning(f"⚠️ VIN completely missing! Using TEMP VIN: {vin}")
+
+                    dealership_name = 'Kokomo Auto World Toyota'
+                    dealer_type = 'Auto'
+                    cms = 'Dealer.com'
+                    dealer_url = 'https://www.kokomo-toyota.com/'
+
+                    brand = model
+                    Trim = vehicle.get("trim", "")
+                    body_style = vehicle.get("bodyStyle", "")
+                    doors = vehicle.get("doors", "")
+                    drive_line = vehicle.get("driveLine", "")
+                    engine = vehicle.get("engine", "") or ""
+                    engine_size = vehicle.get("engineSize", "") or ""
+                    if engine_size:
+                        engine = f"{engine} {engine_size}".strip()
+                    Transmission = vehicle.get("transmission", "")
+                    fuel_type = vehicle.get("fuelType", "")
+                    exterior_color = vehicle.get("exteriorColor", "")
+                    interior_color = vehicle.get("interiorColor", "")
+                    odometer = vehicle.get("odometer", "")
+                    condition_ = vehicle.get("newOrUsed", "")
+                    location = ''
+                    msrp = vehicle.get("msrp", "")
+                    price = vehicle.get("salePrice", "")
+                    savings = ''
+                    internet_price = vehicle.get("internetPrice", "")
+                    
+                    raw_images = vehicle.get("images") or []
+                    image_1 = image_2 = image_3 = ""
+                    if len(raw_images) > 0 and isinstance(raw_images[0], dict):
+                        image_1 = raw_images[0].get("uri") or ""
+                    if len(raw_images) > 1 and isinstance(raw_images[1], dict):
+                        image_2 = raw_images[1].get("uri") or ""
+                    if len(raw_images) > 2 and isinstance(raw_images[2], dict):
+                        image_3 = raw_images[2].get("uri") or ""
+
+                    # Initialize empty fields for things not provided by the API
+                    dealership_address = dealership_phone = store_code = ''
+                    Finance_option = Special_Tag = type_ = sub_type = ''
+                    Features = custom_label_1 = custom_label_2 = description = ''
+                    sleeps = seats = dry_weight = mileage_unit = ''
+                    custom_label_0 = internet_price or ""
+                    mileage_value = odometer if odometer is not None else ""
+                    if mileage_value != "":
+                        mileage_value = str(mileage_value)
+                    length = ''
+
+                    # --- 5. SUPABASE DICTIONARY FORMAT ---
+                    row = {
+                        "sk": sk,
+                        "dealership_name": dealership_name,
+                        "dealer_type": dealer_type,
+                        "dealership_address": dealership_address,
+                        "dealership_phone": dealership_phone,
+                        "store_code": store_code,
+                        "dealer_url": dealer_url,
+                        "cms": cms,
+                        "condition_": condition_,
+                        "year_": year,
+                        "make": make,
+                        "model": model,
+                        "brand": brand,
+                        "vin": vin,
+                        "stock_number": stock_no,
+                        "url": link,
+                        "msrp": msrp,
+                        "price": price,
+                        "savings": savings,
+                        "finance_option": Finance_option,
+                        "special_tag": Special_Tag,
+                        "type_": type_,
+                        "sub_type": sub_type,
+                        "location": location,
+                        "image_url": image_1,
+                        "image_url_2": image_2,
+                        "image_url_3": image_3,
+                        "title": title,
+                        "description": description,
+                        "trim": Trim,
+                        "length": length,
+                        "doors": doors,
+                        "drivetrain": drive_line,
+                        "fuel_type": fuel_type,
+                        "exterior_color": exterior_color,
+                        "interior_color": interior_color,
+                        "sleeps": sleeps,
+                        "seats": seats,
+                        "dry_weight": dry_weight,
+                        "mileage_value": mileage_value,
+                        "mileage_unit": mileage_unit,
+                        "engine": engine,
+                        "transmission": Transmission,
+                        "body_style": body_style,
+                        "features": Features,
+                        "custom_label_0": custom_label_0,
+                        "custom_label_1": custom_label_1,
+                        "custom_label_2": custom_label_2,
+                        "creation_date": self.creation_date,
+                    }
+                    
+                    # --- 6. SUPABASE UPSERT ---
+                    try:
+                        supabase.table("scrap_rawdata").upsert(row, on_conflict="sk,creation_date").execute()
+                        self.logger.info(f"🚘 [{index+1}/{len(vehicles)}] Upserted to Supabase: {title} | VIN: {vin}")
+                        self.inserted_count += 1
+                    except Exception as db_err:
+                        self.logger.error(f"❌ Supabase insert failed for {title}: {db_err}")
+                
+                except Exception as car_err:
+                    self.logger.error(f"🔥 Error parsing vehicle data at index {index}: {car_err}")
                     continue
-                supabase.table("scrap_rawdata").upsert(
-                    row, on_conflict="sk,creation_date"
-                ).execute()
-                self.logger.info("Upserted: %s", row.get("title", ""))
-            except Exception as e:
-                self.logger.error("Kokomo Toyota upsert error: %s", e)
 
-        items_received = len(vehicles)
-        next_start = requested_start + items_received
-        if items_received > 0 and next_start < total_count:
-            yield self.make_request(next_start)
+            # --- PAGINATION ---
+            items_received = len(vehicles)
+            next_start = requested_start + items_received
+            
+            if items_received > 0 and next_start < total_count:
+                self.logger.info(f"⏭️ Moving to next page. Next start index: {next_start}...")
+                yield self.make_request(next_start)
+            else:
+                self.logger.info(f"🎉 Scraping Complete! Total records inserted to Supabase: {self.inserted_count}")
 
-    def _vehicle_to_row(self, vehicle, response_url, index, dealer_url, dealership_name):
-        year = _s(vehicle.get("modelYear"))
-        make = _s(vehicle.get("make"))
-        model = _s(vehicle.get("model"))
-        stock_no = _s(vehicle.get("stockNumber"))
-        vin = _s(vehicle.get("vin"))
-        link = _s(vehicle.get("link"))
-
-        if not vin and link:
-            match = re.search(r"[A-HJ-NPR-Z0-9]{17}", link.upper())
-            if match:
-                vin = match.group(0)
-
-        title = f"{year} {make} {model}".strip()
-        if link and not link.startswith("http"):
-            link = f"https://www.kokomo-toyota.com{link}"
-
-        unique_string = f"{vin}{stock_no}{title}{response_url}{index}"
-        sk = hashlib.md5(unique_string.encode("utf-8")).hexdigest()
-
-        if not vin:
-            vin = f"TEMP-{stock_no if stock_no else sk[:10]}"
-            self.logger.warning("Kokomo Toyota: missing VIN; using %s", vin)
-
-        trim = _s(vehicle.get("trim"))
-        body_style = _s(vehicle.get("bodyStyle"))
-        doors = _s(vehicle.get("doors"))
-        drive_line = _s(vehicle.get("driveLine"))
-        engine = _s(vehicle.get("engine"))
-        engine_size = _s(vehicle.get("engineSize"))
-        if engine_size:
-            engine = f"{engine} {engine_size}".strip()
-        transmission = _s(vehicle.get("transmission"))
-        fuel_type = _s(vehicle.get("fuelType"))
-        exterior_color = _s(vehicle.get("exteriorColor"))
-        interior_color = _s(vehicle.get("interiorColor"))
-        odometer = _s(vehicle.get("odometer"))
-        condition_ = _s(vehicle.get("newOrUsed"))
-        msrp = _s(vehicle.get("msrp"))
-        price = _s(vehicle.get("salePrice"))
-        internet_price = _s(vehicle.get("internetPrice"))
-
-        raw_images = vehicle.get("images") or []
-        image_1 = image_2 = image_3 = ""
-        if len(raw_images) > 0 and isinstance(raw_images[0], dict):
-            image_1 = _s(raw_images[0].get("uri"))
-        if len(raw_images) > 1 and isinstance(raw_images[1], dict):
-            image_2 = _s(raw_images[1].get("uri"))
-        if len(raw_images) > 2 and isinstance(raw_images[2], dict):
-            image_3 = _s(raw_images[2].get("uri"))
-
-        brand = model
-
-        return {
-            "sk": sk,
-            "dealership_name": dealership_name,
-            "dealer_type": "Auto",
-            "dealership_address": "",
-            "dealership_phone": "",
-            "store_code": "",
-            "dealer_url": dealer_url,
-            "cms": "Dealer.com",
-            "condition_": condition_,
-            "year_": year,
-            "make": make,
-            "model": model,
-            "brand": brand,
-            "vin": vin,
-            "stock_number": stock_no,
-            "url": link,
-            "msrp": msrp,
-            "price": price,
-            "savings": "",
-            "finance_option": "",
-            "special_tag": "",
-            "type_": "",
-            "sub_type": "",
-            "location": "",
-            "image_url": image_1,
-            "image_url_2": image_2,
-            "image_url_3": image_3,
-            "title": title,
-            "description": "",
-            "trim": trim,
-            "length": "",
-            "doors": doors,
-            "drivetrain": drive_line,
-            "fuel_type": fuel_type,
-            "exterior_color": exterior_color,
-            "interior_color": interior_color,
-            "sleeps": "",
-            "seats": "",
-            "dry_weight": "",
-            "mileage_value": odometer,
-            "mileage_unit": "",
-            "engine": engine,
-            "transmission": transmission,
-            "body_style": body_style,
-            "features": "",
-            "custom_label_0": internet_price,
-            "custom_label_1": "",
-            "custom_label_2": "",
-            "creation_date": self.creation_date,
-        }
+        except Exception as e:
+            self.logger.error(f"💀 Critical Error parsing JSON response: {e}")
