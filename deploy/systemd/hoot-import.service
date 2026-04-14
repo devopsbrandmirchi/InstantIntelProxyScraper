@@ -1,0 +1,13 @@
+[Unit]
+Description=Hoot inventory CSV import to Supabase (hoot_inventory)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/scrappingproxy
+EnvironmentFile=/root/scrappingproxy/.env
+ExecStart=/root/scrappingproxy/.venv/bin/python /root/scrappingproxy/Hootprocess/hoot_import.py
+User=root
+Group=root
+StandardOutput=journal
+StandardError=journal

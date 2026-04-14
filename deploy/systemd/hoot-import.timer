@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Hoot inventory import daily at 04:15 UTC
+
+[Timer]
+OnCalendar=*-*-* 04:15:00 UTC
+Unit=hoot-import.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
