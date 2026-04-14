@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Hoot → inventorydata transfer daily at 05:30 UTC (after hoot CSV import)
+
+[Timer]
+OnCalendar=*-*-* 05:30:00 UTC
+Unit=hoot-inventorydata.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

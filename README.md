@@ -21,9 +21,11 @@ InstantIntelProxyScraper/
 │   └── spiders/               # One module per dealer / spider
 │       └── *.py               # Each file defines `name = "..."` for `scrapy crawl`
 │
-├── Hootprocess/               # Hoot CSV → Supabase `hoot_inventory` (non-Scrapy job)
-│   ├── hoot_import.py         # Per-client feed fetch, transforms, chunked upsert
-│   └── requirements.txt     # Standalone pip list (pandas, requests, supabase); droplet also uses root requirements.txt
+├── Hootprocess/               # Hoot CSV + transfer jobs (non-Scrapy)
+│   ├── supabase_key.py        # Shared HOOT_SUPABASE_SECRET_KEY / service_role resolution
+│   ├── hoot_import.py         # CSV → `hoot_inventory` upsert
+│   ├── hoot_inventorydata.py  # RPC `run_inventory_from_hoot` → `inventorydata`
+│   └── requirements.txt       # Standalone pip list; droplet also uses root requirements.txt
 │
 ├── .github/workflows/
 │   └── scrapy-production.yml  # CI: list spiders matrix, run with secrets
@@ -31,8 +33,10 @@ InstantIntelProxyScraper/
 ├── deploy/systemd/
 │   ├── scrapy-spider@.service # Template unit: `scrapy crawl %i`
 │   ├── scrapy-spider-*.timer  # Per-spider schedules (staggered UTC, see docs)
-│   ├── hoot-import.service    # Oneshot: run `Hootprocess/hoot_import.py` with `.env`
-│   └── hoot-import.timer      # Daily 04:15 UTC → `hoot-import.service`
+│   ├── hoot-import.service    # Oneshot: `hoot_import.py`
+│   ├── hoot-import.timer      # Daily 04:15 UTC
+│   ├── hoot-inventorydata.service  # Oneshot: `hoot_inventorydata.py` (RPC transfer)
+│   └── hoot-inventorydata.timer    # Daily 05:30 UTC (after CSV import)
 │
 └── docs/
     ├── digitalocean-setup.md  # Droplet: venv, .env, systemd copy/enable
@@ -44,9 +48,9 @@ InstantIntelProxyScraper/
 1. Environment: `.env` or process env supplies `SUPABASE_*` and optional `PROXY_*`.
 2. Scrapy loads `Rocmob/settings.py` → proxy middleware applies unless a spider sets `ENABLE_PROXY` false.
 3. Each spider crawls targets and upserts via `Rocmob/rocmob_cfg.py` → Supabase.
-4. **Hoot import**: `Hootprocess/hoot_import.py` reads `public.clients` (Hoot CSV URLs in `inventory_api`), applies lookup/transform rules, upserts `hoot_inventory`. Uses **`HOOT_SUPABASE_SECRET_KEY`** (Secret `sb_secret_...` or legacy `service_role` JWT) when set, else falls back to **`SUPABASE_SERVICE_ROLE_KEY`**. Optional: `HOOT_ACTIVE_PULL_ONLY`, `HOOT_INCLUDE_INACTIVE_CLIENTS`, `HOOT_CHUNK_SIZE`, `HOOT_HTTP_*` (see script docstring). On the droplet, `hoot-import.timer` runs this daily at **04:15 UTC** via `hoot-import.service`.
+4. **Hoot import**: `Hootprocess/hoot_import.py` upserts **`hoot_inventory`** from CSV feeds; **`Hootprocess/hoot_inventorydata.py`** calls RPC **`run_inventory_from_hoot`** to refresh **`inventorydata`** for a date. Both use **`HOOT_SUPABASE_SECRET_KEY`** when set, else **`SUPABASE_SERVICE_ROLE_KEY`**. Optional env for import: `HOOT_ACTIVE_PULL_ONLY`, `HOOT_INCLUDE_INACTIVE_CLIENTS`, `HOOT_CHUNK_SIZE`, `HOOT_HTTP_*`; for transfer: **`HOOT_TRANSFER_DATE`** (YYYY-MM-DD, default today). Timers: **`hoot-import.timer`** **04:15 UTC**, **`hoot-inventorydata.timer`** **05:30 UTC** (staggered after import).
 5. **GitHub Actions**: install deps, `scrapy list` / `scrapy crawl` with repository secrets.
-6. **Droplet**: same code + venv; copy `deploy/systemd` units and enable timers (see `docs/digitalocean-setup.md`). Copy and enable `hoot-import.service` / `hoot-import.timer` separately if you use the Hoot job on that host.
+6. **Droplet**: same code + venv; copy `deploy/systemd` units and enable timers (see `docs/digitalocean-setup.md`). Enable **`hoot-import`** and **`hoot-inventorydata`** units if you use the Hoot pipeline on that host.
 
 ## Requirements
 
@@ -68,9 +72,10 @@ Required for data writes:
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_KEY`, but service role is recommended) — used by Scrapy / `Rocmob`
 
-Hoot inventory import (optional on hosts that run `hoot-import.service`):
+Hoot pipeline (optional on hosts that run `hoot-import` / `hoot-inventorydata` timers):
 
-- **`HOOT_SUPABASE_SECRET_KEY`** — preferred elevated key for `Hootprocess/hoot_import.py` only (Secret `sb_secret_...` or legacy `service_role` JWT), so it does not have to reuse `SUPABASE_SERVICE_ROLE_KEY`. If empty, the Hoot script uses `SUPABASE_SERVICE_ROLE_KEY` instead.
+- **`HOOT_SUPABASE_SECRET_KEY`** — preferred elevated key for `hoot_import.py` and `hoot_inventorydata.py` (Secret `sb_secret_...` or legacy `service_role` JWT). If empty, both fall back to `SUPABASE_SERVICE_ROLE_KEY`.
+- **`HOOT_TRANSFER_DATE`** — optional `YYYY-MM-DD` for `hoot_inventorydata.py` (defaults to today).
 
 Proxy settings:
 

@@ -51,10 +51,12 @@ Edit `.env` and set:
 
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY` (Scrapy / pipelines)
-- `HOOT_SUPABASE_SECRET_KEY` (optional but recommended for `hoot-import.service`: Supabase **Secret** key `sb_secret_...` or legacy `service_role` JWT — separate from `SUPABASE_SERVICE_ROLE_KEY` if that key is not elevated)
+- `HOOT_SUPABASE_SECRET_KEY` (optional but recommended for `hoot-import.service` and `hoot-inventorydata.service`: Supabase **Secret** key `sb_secret_...` or legacy `service_role` JWT)
 - `ENABLE_PROXY=true` or `false`
 - `PROXY_URL`
 - `PROXY_AUTH` (or `PROXY_AUTH_LIST`)
+
+**Hoot timers (optional):** Copy `deploy/systemd/hoot-import.service`, `hoot-import.timer`, `hoot-inventorydata.service`, and `hoot-inventorydata.timer` to `/etc/systemd/system/`, then `systemctl daemon-reload` and `systemctl enable --now hoot-import.timer hoot-inventorydata.timer` (CSV import **04:15 UTC**, `inventorydata` transfer **05:30 UTC**).
 
 ## 5) Test commands
 

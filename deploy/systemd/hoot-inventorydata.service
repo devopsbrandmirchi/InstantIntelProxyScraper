@@ -1,0 +1,13 @@
+[Unit]
+Description=Hoot → inventorydata transfer (run_inventory_from_hoot RPC)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/scrappingproxy
+EnvironmentFile=/root/scrappingproxy/.env
+ExecStart=/root/scrappingproxy/.venv/bin/python /root/scrappingproxy/Hootprocess/hoot_inventorydata.py
+User=root
+Group=root
+StandardOutput=journal
+StandardError=journal
