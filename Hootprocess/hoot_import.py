@@ -5,10 +5,22 @@ custom-type / lookup rules as the Django job, upsert into public.hoot_inventory.
 
 Environment:
   SUPABASE_URL                 Project URL (https://xxx.supabase.co)
-  SUPABASE_SERVICE_ROLE_KEY    Elevated key for server jobs — either:
-                               - New: Secret key `sb_secret_...` (API Keys → Secret keys), or
-                               - Legacy: `service_role` JWT (`eyJ...`, Legacy API keys tab).
-                               Do not use anon / publishable keys here.
+
+  HOOT_SUPABASE_SECRET_KEY     **Preferred** elevated key for this script only (so it does not share
+                               `SUPABASE_SERVICE_ROLE_KEY` with Scrapy / other jobs that may use a
+                               different key). Value must be either:
+                               - **Secret** key `sb_secret_...` (Dashboard → Settings → API Keys → Secret keys), or
+                               - Legacy **service_role** JWT `eyJ...` (Legacy API keys tab).
+
+  SUPABASE_SERVICE_ROLE_KEY    **Fallback** if `HOOT_SUPABASE_SECRET_KEY` is unset: same rules as above
+                               (Secret or service_role). Do not use publishable or anon here either.
+
+                               Wrong keys (script exits with a clear error):
+                                 - **Publishable** `sb_publishable_...`
+                                 - **Anon** JWT (RLS hides `clients`; 0 rows)
+
+                               Put secrets in server `.env` (not in git); `hoot-import.service` loads it via
+                               `EnvironmentFile`.
 
 Optional:
   HOOT_ACTIVE_PULL_ONLY=1      Default 1: only clients with active_pull=true and scrap_feed=false
@@ -64,6 +76,18 @@ def is_supabase_secret_key(api_key: str) -> bool:
 def is_supabase_publishable_key(api_key: str) -> bool:
     """Low-privilege browser key — wrong for this script."""
     return api_key.strip().startswith("sb_publishable_")
+
+
+def resolve_supabase_api_key() -> Tuple[str, str]:
+    """
+    Returns (key, env_var_name) for Supabase client.
+    Prefer HOOT_SUPABASE_SECRET_KEY so Hoot import does not depend on SUPABASE_SERVICE_ROLE_KEY used elsewhere.
+    """
+    hoot = (os.environ.get("HOOT_SUPABASE_SECRET_KEY") or "").strip()
+    if hoot:
+        return hoot, "HOOT_SUPABASE_SECRET_KEY"
+    legacy = (os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    return legacy, "SUPABASE_SERVICE_ROLE_KEY"
 
 
 def env_include_inactive_clients() -> bool:
@@ -570,7 +594,10 @@ def clients_for_hoot_import(
 
 
 def print_import_diagnostics(
-    supabase: Client, include_inactive: bool, active_pull_only: bool
+    supabase: Client,
+    include_inactive: bool,
+    active_pull_only: bool,
+    supabase_key_env: str,
 ) -> None:
     """Explain why 0 clients might run: filters, empty inventory_api, or RLS."""
     r = supabase.table("clients").select(
@@ -594,8 +621,9 @@ def print_import_diagnostics(
     if total == 0:
         print(
             "\n*** No rows returned from public.clients. "
-            "Use SUPABASE_SERVICE_ROLE_KEY in GitHub Actions (not the anon key). "
-            "If using the service role and this persists, confirm clients exist in the project. ***\n"
+            f"The API key in {supabase_key_env} may be the anon (public) key, or RLS blocks reads. "
+            "Use HOOT_SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY with a Secret (sb_secret_...) "
+            "or legacy service_role JWT — not anon. If the key is correct, confirm clients exist in the project. ***\n"
         )
     elif with_url == 0:
         print(
@@ -616,16 +644,26 @@ def main() -> None:
     parser.add_argument("--client-id", type=int, default=None, help="Process only this client id")
     args = parser.parse_args()
 
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    url = (os.environ.get("SUPABASE_URL") or "").strip()
+    key, key_env = resolve_supabase_api_key()
     if not url or not key:
-        print("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY", file=sys.stderr)
+        print(
+            "Set SUPABASE_URL and an elevated Supabase key for this job (e.g. in server .env — not committed).\n"
+            "Preferred: HOOT_SUPABASE_SECRET_KEY = Secret key (sb_secret_...) or legacy service_role JWT.\n"
+            "Fallback: SUPABASE_SERVICE_ROLE_KEY with the same kind of value (if HOOT_SUPABASE_SECRET_KEY is unset).\n"
+            "Do not use publishable (sb_publishable_...) or anon keys.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if is_supabase_publishable_key(key):
         print(
-            "\n*** Wrong key: this looks like a PUBLISHABLE key (sb_publishable_...). "
-            "Use the Secret key (sb_secret_...) or legacy service_role JWT. ***\n",
+            f"\n*** Wrong key: {key_env} is a PUBLISHABLE key (sb_publishable_...). "
+            "That key is for browsers and cannot run this import.\n\n"
+            "Fix: Supabase Dashboard → Settings → API Keys → copy a **Secret** key (sb_secret_...) into "
+            "HOOT_SUPABASE_SECRET_KEY in your droplet `.env` (recommended, separate from other scripts), "
+            "or legacy **service_role** JWT (eyJ...). Then: `systemctl start hoot-import.service` "
+            "or wait for the timer. ***\n",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -642,8 +680,8 @@ def main() -> None:
         print(
             "\n*** Wrong key: this is the ANON (public) API key. "
             "Row Level Security hides public.clients, so 0 rows are returned. ***\n"
-            "Fix: Dashboard → Settings → API Keys → copy a **Secret** key (sb_secret_...) "
-            "or Legacy tab **service_role** (eyJ...) into SUPABASE_SERVICE_ROLE_KEY.\n"
+            f"Fix: set {key_env} (prefer HOOT_SUPABASE_SECRET_KEY in `.env`) to a **Secret** key (sb_secret_...) "
+            "or Legacy tab **service_role** (eyJ...).\n"
             "SQL Editor uses the database role `postgres`, which bypasses RLS — that is why SQL still shows data.\n",
             file=sys.stderr,
         )
@@ -666,7 +704,7 @@ def main() -> None:
     pull_date_time = now
     print("Start Hoot inventory import:", now)
 
-    print_import_diagnostics(supabase, include_inactive, active_pull_only)
+    print_import_diagnostics(supabase, include_inactive, active_pull_only, key_env)
 
     clients = clients_for_hoot_import(supabase, include_inactive, active_pull_only, args.client_id)
     print(

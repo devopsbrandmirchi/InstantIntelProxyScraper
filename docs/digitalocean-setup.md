@@ -50,7 +50,8 @@ cp .env.example .env
 Edit `.env` and set:
 
 - `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY` (Scrapy / pipelines)
+- `HOOT_SUPABASE_SECRET_KEY` (optional but recommended for `hoot-import.service`: Supabase **Secret** key `sb_secret_...` or legacy `service_role` JWT — separate from `SUPABASE_SERVICE_ROLE_KEY` if that key is not elevated)
 - `ENABLE_PROXY=true` or `false`
 - `PROXY_URL`
 - `PROXY_AUTH` (or `PROXY_AUTH_LIST`)

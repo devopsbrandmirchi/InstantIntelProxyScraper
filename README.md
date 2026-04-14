@@ -44,7 +44,7 @@ InstantIntelProxyScraper/
 1. Environment: `.env` or process env supplies `SUPABASE_*` and optional `PROXY_*`.
 2. Scrapy loads `Rocmob/settings.py` → proxy middleware applies unless a spider sets `ENABLE_PROXY` false.
 3. Each spider crawls targets and upserts via `Rocmob/rocmob_cfg.py` → Supabase.
-4. **Hoot import**: `Hootprocess/hoot_import.py` reads `public.clients` (Hoot CSV URLs in `inventory_api`), applies lookup/transform rules, upserts `hoot_inventory`. Optional env: `HOOT_ACTIVE_PULL_ONLY`, `HOOT_INCLUDE_INACTIVE_CLIENTS`, `HOOT_CHUNK_SIZE`, `HOOT_HTTP_*` (see script docstring). On the droplet, `hoot-import.timer` runs this daily at **04:15 UTC** via `hoot-import.service`.
+4. **Hoot import**: `Hootprocess/hoot_import.py` reads `public.clients` (Hoot CSV URLs in `inventory_api`), applies lookup/transform rules, upserts `hoot_inventory`. Uses **`HOOT_SUPABASE_SECRET_KEY`** (Secret `sb_secret_...` or legacy `service_role` JWT) when set, else falls back to **`SUPABASE_SERVICE_ROLE_KEY`**. Optional: `HOOT_ACTIVE_PULL_ONLY`, `HOOT_INCLUDE_INACTIVE_CLIENTS`, `HOOT_CHUNK_SIZE`, `HOOT_HTTP_*` (see script docstring). On the droplet, `hoot-import.timer` runs this daily at **04:15 UTC** via `hoot-import.service`.
 5. **GitHub Actions**: install deps, `scrapy list` / `scrapy crawl` with repository secrets.
 6. **Droplet**: same code + venv; copy `deploy/systemd` units and enable timers (see `docs/digitalocean-setup.md`). Copy and enable `hoot-import.service` / `hoot-import.timer` separately if you use the Hoot job on that host.
 
@@ -66,7 +66,11 @@ cp .env.example .env
 Required for data writes:
 
 - `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_KEY`, but service role is recommended)
+- `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_KEY`, but service role is recommended) — used by Scrapy / `Rocmob`
+
+Hoot inventory import (optional on hosts that run `hoot-import.service`):
+
+- **`HOOT_SUPABASE_SECRET_KEY`** — preferred elevated key for `Hootprocess/hoot_import.py` only (Secret `sb_secret_...` or legacy `service_role` JWT), so it does not have to reuse `SUPABASE_SERVICE_ROLE_KEY`. If empty, the Hoot script uses `SUPABASE_SERVICE_ROLE_KEY` instead.
 
 Proxy settings:
 
