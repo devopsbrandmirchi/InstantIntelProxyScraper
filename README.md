@@ -7,7 +7,7 @@ Production Scrapy project for RV inventory scraping, proxy support, and Supabase
 ```
 InstantIntelProxyScraper/
 ├── scrapy.cfg                 # Scrapy project entry (points at Rocmob)
-├── requirements.txt           # Python deps (scrapy, supabase, python-dotenv, …)
+├── requirements.txt           # Python deps (scrapy, supabase, pandas, requests, …)
 ├── .env.example               # Template for local / droplet env vars (copy to .env)
 │
 ├── Rocmob/                    # Scrapy project package
@@ -21,12 +21,18 @@ InstantIntelProxyScraper/
 │   └── spiders/               # One module per dealer / spider
 │       └── *.py               # Each file defines `name = "..."` for `scrapy crawl`
 │
+├── Hootprocess/               # Hoot CSV → Supabase `hoot_inventory` (non-Scrapy job)
+│   ├── hoot_import.py         # Per-client feed fetch, transforms, chunked upsert
+│   └── requirements.txt     # Standalone pip list (pandas, requests, supabase); droplet also uses root requirements.txt
+│
 ├── .github/workflows/
 │   └── scrapy-production.yml  # CI: list spiders matrix, run with secrets
 │
 ├── deploy/systemd/
 │   ├── scrapy-spider@.service # Template unit: `scrapy crawl %i`
-│   └── scrapy-spider-*.timer  # Per-spider schedules (staggered UTC, see docs)
+│   ├── scrapy-spider-*.timer  # Per-spider schedules (staggered UTC, see docs)
+│   ├── hoot-import.service    # Oneshot: run `Hootprocess/hoot_import.py` with `.env`
+│   └── hoot-import.timer      # Daily 04:15 UTC → `hoot-import.service`
 │
 └── docs/
     ├── digitalocean-setup.md  # Droplet: venv, .env, systemd copy/enable
@@ -38,8 +44,9 @@ InstantIntelProxyScraper/
 1. Environment: `.env` or process env supplies `SUPABASE_*` and optional `PROXY_*`.
 2. Scrapy loads `Rocmob/settings.py` → proxy middleware applies unless a spider sets `ENABLE_PROXY` false.
 3. Each spider crawls targets and upserts via `Rocmob/rocmob_cfg.py` → Supabase.
-4. **GitHub Actions**: install deps, `scrapy list` / `scrapy crawl` with repository secrets.
-5. **Droplet**: same code + venv; copy `deploy/systemd` units and enable timers (see `docs/digitalocean-setup.md`).
+4. **Hoot import**: `Hootprocess/hoot_import.py` reads `public.clients` (Hoot CSV URLs in `inventory_api`), applies lookup/transform rules, upserts `hoot_inventory`. Optional env: `HOOT_ACTIVE_PULL_ONLY`, `HOOT_INCLUDE_INACTIVE_CLIENTS`, `HOOT_CHUNK_SIZE`, `HOOT_HTTP_*` (see script docstring). On the droplet, `hoot-import.timer` runs this daily at **04:15 UTC** via `hoot-import.service`.
+5. **GitHub Actions**: install deps, `scrapy list` / `scrapy crawl` with repository secrets.
+6. **Droplet**: same code + venv; copy `deploy/systemd` units and enable timers (see `docs/digitalocean-setup.md`). Copy and enable `hoot-import.service` / `hoot-import.timer` separately if you use the Hoot job on that host.
 
 ## Requirements
 
