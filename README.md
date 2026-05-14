@@ -38,9 +38,11 @@ InstantIntelProxyScraper/
 │   ├── hoot-inventorydata.service  # Oneshot: `hoot_inventorydata.py` (RPC transfer)
 │   └── hoot-inventorydata.timer    # Daily 05:30 UTC (after CSV import)
 │
+├── scraper-bridge/            # FastAPI bridge: `main.py` + README (Run spider → full `tail -f …` in `message`)
+│
 └── docs/
     ├── digitalocean-setup.md  # Droplet: venv, .env, systemd copy/enable
-    └── debug.md               # journalctl, timers, env checks, stagger table
+    └── debug.md               # journalctl, timers, bridge vs systemd, env checks
 ```
 
 **Runtime flow (high level)**

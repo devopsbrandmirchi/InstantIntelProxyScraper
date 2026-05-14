@@ -21,6 +21,35 @@ Replace `Livingston` with any spider name from `scrapy list`.
 
 ---
 
+## Scraper bridge (“Run spider” from the UI) vs systemd
+
+The dashboard / bridge path starts Scrapy **in the background** and writes logs under **`_bridge_crawl_logs/<spider>-<timestamp>.log`**. That is **not** the same as **`scrapy-spider@<name>.service`** timers (those use `journalctl`).
+
+**Command to check the crawl log on the droplet** (use the path the UI shows; prefer **absolute** so it works from any `cwd`):
+
+```bash
+tail -f /root/scrappingproxy/_bridge_crawl_logs/mcdavid-1778736609.log
+```
+
+Same thing relative to the Scrapy project directory:
+
+```bash
+cd /root/scrappingproxy && tail -f _bridge_crawl_logs/mcdavid-1778736609.log
+```
+
+Always put **`tail -f` first**, then the file path (not `path tail -f`).
+
+**systemd spiders** (scheduled or manual) — logs go to journald, not `_bridge_crawl_logs`:
+
+```bash
+systemctl start scrapy-spider@mcdavid.service
+journalctl -u scrapy-spider@mcdavid.service -f
+```
+
+To print the **exact** `tail -f …` line in the Run spider banner, update the droplet **scraper-bridge** so the API returns something like **`logTailCommand`** (see `scraper-bridge/README.md` in this repo for a snippet).
+
+---
+
 ## Environment & proxy (what Scrapy actually sees)
 
 ```bash
