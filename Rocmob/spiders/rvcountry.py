@@ -1,181 +1,175 @@
-import scrapy
 import hashlib
-import json
 from datetime import datetime, timezone
-from scrapy import Selector
-from scrapy import Request
-import requests
-from scrapy.exceptions import CloseSpider
+from urllib.parse import urlencode
+
+import scrapy
+from scrapy.http import Request
+
 from Rocmob.rocmob_cfg import supabase
 
 
 class RvcountrySpider(scrapy.Spider):
     name = "rvcountry"
-    request_counter = 0
-    previous_request_url = None
+    allowed_domains = ["inventory.coasttechnology.org", "rvcountry.com"]
+
+    inventory_page = "https://rvcountry.com/rvs-for-sale"
+    api_url = "https://inventory.coasttechnology.org/api/v3/inventory/"
+    company_id = "36"
+    per_page = 50
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.creation_date = datetime.now(timezone.utc).date().isoformat()
 
     def start_requests(self):
-        cookies = {
-            'PHPSESSID': '05at9n5p81fmrilv02aci7g0dt',
-            '_fbp': 'fb.1.1730195487514.154547786295558451',
-            'gg_ignore_queue': '1',
-            'cookieyes-consent': 'consentid:Z1AwUnpwSTU2TWhPOEZzU1JFcVpacTQ1M09YREtoSmc,consent:yes,action:yes,necessary:yes,functional:yes,analytics:yes,performance:yes,advertisement:yes,other:yes',
-            '__ggtruid': '1730198175405.be35087e-644d-004c-aec8-ed0feea31690',
+        yield self._inventory_request(page=1)
+
+    def _inventory_request(self, page):
+        params = {
+            "filters[displayOnWebsite][$eq]": "true",
+            "filters[lot][$ne]": "BGN",
+            "sort[0]": "year:desc",
+            "sort[1]": "received_date:desc",
+            "company[0]": self.company_id,
+            "withUnitData": "1",
+            "page": str(page),
+            "per_page": str(self.per_page),
         }
-        headers = {
-            'Accept': '*/*',
-            'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
-            'Connection': 'keep-alive',
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'Origin': 'https://rvcountry.com',
-            'Referer': 'https://rvcountry.com/rvs-for-sale/?lot=Fresno_Ca',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin',
-            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36',
-            'X-Requested-With': 'XMLHttpRequest',
-            'sec-ch-ua': '"Google Chrome";v="117", "Not;A=Brand";v="8", "Chromium";v="117"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Linux"',
-        }
+        return Request(
+            url=f"{self.api_url}?{urlencode(params)}",
+            callback=self.parse_inventory,
+            errback=self.handle_error,
+            meta={"page": page},
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": self.inventory_page,
+                "Origin": "https://rvcountry.com",
+            },
+        )
 
-        classs = ['Car', 'Class A', 'Class B', 'Class C', 'Fifth Wheel', 'Fold Down', 'Pickup Truck', 'Toy Hauler', 'Travel Trailer', 'Truck Camper']
+    def parse_inventory(self, response):
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            self.logger.error("Invalid JSON on page %s: %s", response.meta.get("page"), exc)
+            return
 
-        for class_type in classs:
-            data = {
-                'action': 'dtk_im2_ajax_srp_getPosts',
-                'selectedOptions[marketclass][value]': '{}'.format(class_type),
-                'selectedOptions[lot][value]': 'Fresno Ca',
-                'page': '1',
-                'limit': '15',
-                'sort': '0',
-                'latlong[latitude]': '',
-                'latlong[longitude]': '',
-            }
+        for item in payload.get("data") or []:
+            self._upsert_item(item)
 
-            try:
-                response = requests.post('https://rvcountry.com/wp-admin/admin-ajax.php', cookies=cookies, headers=headers, data=data)
-                total_pages = json.loads(response.text).get('pagesMax', 0)
+        pagination = payload.get("pagination") or {}
+        current_page = pagination.get("current_page") or response.meta.get("page", 1)
+        last_page = pagination.get("last_page")
+        if last_page and current_page < last_page:
+            yield self._inventory_request(page=current_page + 1)
 
-                for k in range(0, int(total_pages) + 2):
-                    url = 'https://rvcountry.com/rvs-for-sale&pagination={}'.format(k)
+    def handle_error(self, failure):
+        self.logger.error("Inventory request failed: %s", failure.value)
 
-                    if self.previous_request_url == url:
-                        self.request_counter += 1
-                    else:
-                        self.previous_request_url = url
-                        self.request_counter = 1
+    def _upsert_item(self, item):
+        url = self._rvcountry_url(item.get("urls") or [])
+        if not url:
+            self.logger.debug("Skipping unit %s without rvcountry.com URL", item.get("id"))
+            return
 
-                    if self.request_counter > 3:
-                        self.logger.warning("Request repeated %s times. Stopping the spider.", self.request_counter)
-                        raise CloseSpider("Repeated requests detected, stopping spider.")
+        title = (item.get("title") or "").strip()
+        vin = (item.get("vin") or "").strip()
+        stock_number = (item.get("stock_number") or "").strip()
 
-                    headers = dict(headers)
-                    headers['Referer'] = url
+        location_info = item.get("company_location") or {}
+        city = (location_info.get("city") or "").strip()
+        state = (location_info.get("state") or "").strip()
+        location = ", ".join(part for part in (city, state) if part)
+        dealership_name = "RV Country"
+        if city:
+            dealership_name = f"RV Country {city}"
 
-                    post_data = {
-                        'action': 'dtk_im2_ajax_srp_getPosts',
-                        'selectedOptions[marketclass][value]': '{}'.format(class_type),
-                        'selectedOptions[lot][value]': 'Fresno Ca',
-                        'page': str(k),
-                        'limit': '15',
-                        'sort': '0',
-                        'latlong[latitude]': '',
-                        'latlong[longitude]': '',
-                    }
-
-                    response = requests.post('https://rvcountry.com/wp-admin/admin-ajax.php', cookies=cookies, headers=headers, data=post_data)
-                    posts = json.loads(response.text).get('posts', [])
-                    for i in posts:
-                        item_url = i.get('url', '')
-                        description = i.get('description', '')
-                        images = i.get('images', [])
-                        title = i.get('title', '')
-                        yield Request(item_url, callback=self.parse, meta={'description': description, 'images': images, 'title': title})
-
-            except Exception as e:
-                self.logger.error("Error in request: %s", e)
-                raise CloseSpider("Error occurred during scraping")
-
-    def parse(self, response):
-        sel = Selector(response)
-        url = response.url
-        dealership_name = 'RV Country Fresno'
-        finance_option = dealership_phone = doors = sleeps = dry_weight = length = trim = ''
-        model = make = year = condition_ = type_ = sub_type = vin = brand = ''
-        Special_Tag = Drivetrain = Fuel_Type = exterior_color = interior_color = ''
-        seats = mileage_value = mileage_unit = engine = Transmission = body_style = ''
-        Features = custom_label_0 = custom_label_1 = custom_label_2 = ''
-
-        dealer_type = 'RV'
-        dealership_address = ''
-        store_code = ''
-        dealer_url = 'https://www.rvcountry.com/'
-        cms = 'Stealth AI Suite'
-
-        images = response.meta.get('images', []) or []
-        image_1 = image_2 = image_3 = ''
-        if len(images) >= 3:
-            image_1, image_2, image_3 = images[0], images[1], images[2]
-        elif len(images) == 2:
-            image_1, image_2 = images[0], images[1]
-        elif len(images) == 1:
-            image_1 = images[0]
-
-        titles = response.meta.get('title', '')
-        title = titles.replace('<br>', '  ').replace('<span>', '  ').replace('</span>', ' ') if titles else ''
-
-        pricing_text = ''.join(sel.xpath('//div[@class="pricing"]//span//text()').extract())
-        if 'PAYMENTS AS LOW AS:' in pricing_text:
-            finance_option = 'PAYMENTS AS LOW AS:' + pricing_text.split('PAYMENTS AS LOW AS:')[-1]
-
-        msrp = ''.join(sel.xpath('//span[@class="price msrp"]//span//text()').extract())
-        savings = ''.join(sel.xpath('//span[@class="price savings"]//span//text()').extract())
-        price = ''.join(sel.xpath('//span[@class="price salesprice"]//span//text()').extract())
-        location = ''.join(sel.xpath('//span[@class="location name"]//text()').extract())
-        stock_number = ''.join(sel.xpath("//div/div[@class='specification'][1]/div[@class='right']/span/text()").extract()).strip()
-        vin = ''.join(sel.xpath("//div/div[@class='specification'][2]/div[@class='right']/span/text()").extract()).strip()
-        condition_ = ''.join(sel.xpath("//div/div[@class='specification'][3]/div[@class='right']/span/text()").extract()).strip()
-        year = ''.join(sel.xpath("//div/div[@class='specification'][4]/div[@class='right']/span/text()").extract()).strip()
-        make = ''.join(sel.xpath("//div/div[@class='specification'][5]/div[@class='right']/span/text()").extract()).strip()
-        model = ''.join(sel.xpath("//div/div[@class='specification'][6]/div[@class='right']/span/text()").extract()).strip()
-        brand = model
-        trim = ''.join(sel.xpath("//div/div[@class='specification'][7]/div[@class='right']/span/text()").extract()).strip()
-        location = ''.join(sel.xpath("//span[@class='city_state']/text()").extract()).strip()
-
-        description = ''
-
-        types = [
-            "TRAVEL TRAILER", "FIFTH WHEEL", "CLASS A DIESEL MOTORHOME", "TRAVEL TRAILER HAULER",
-            "CLASS A MOTORHOME", "FIFTH WHEEL HAULER", "CLASS C MOTORHOME", "CLASS C DIESEL",
-            "DESTINATION TRAILER", "CLASS B MOTORHOME", "CLASS B DIESEL", "FOLD DOWN"
+        address_parts = [
+            (location_info.get("address") or "").strip(),
+            city,
+            state,
+            (location_info.get("zip") or "").strip(),
         ]
-        desc = sel.xpath("//div[@class='page selected']//text()").extract()
-        type1_ = ''
-        types_found = [t for t in types if any(t.lower() in (d or '').lower() for d in desc)]
-        if types_found:
-            type1_ = types_found[0]
-        type_ = type1_
+        dealership_address = ", ".join(part for part in address_parts if part)
+        dealership_phone = (location_info.get("phone") or "").strip()
+        store_code = (item.get("lot") or "").strip()
+
+        unit_classification = item.get("unit_classification") or {}
+        vehicle_type = unit_classification.get("vehicle_type") or {}
+
+        condition = (item.get("condition") or {}).get("name") or ""
+        year = item.get("year")
+        if year in (None, 0, ""):
+            year = (item.get("inventory_units") or {}).get("year")
+        year = str(year) if year not in (None, 0, "") else ""
+
+        make = ((item.get("unit_make") or {}).get("name") or "").strip()
+        model = ((item.get("unit_model") or {}).get("name") or "").strip()
+        trim = ((item.get("unit_trim") or {}).get("name") or "").strip()
+        brand = model
+
+        type_ = (unit_classification.get("name") or "").strip()
+        sub_type = (vehicle_type.get("name") or "").strip()
+
+        msrp = self._format_price(item.get("price_msrp"))
+        price = self._format_price(item.get("price_current"))
+        savings = self._format_price(item.get("price_current_savings"))
+        if not savings and item.get("price_msrp") and item.get("price_current"):
+            try:
+                savings = self._format_price(float(item["price_msrp"]) - float(item["price_current"]))
+            except (TypeError, ValueError):
+                savings = ""
+
+        finance_option = ""
+        if item.get("price_monthly"):
+            finance_option = f"PAYMENTS AS LOW AS: {self._format_price(item.get('price_monthly'))}/mo"
+
+        image_urls = self._image_urls(item)
+        image_1 = image_urls[0] if len(image_urls) > 0 else (item.get("display_image") or "")
+        image_2 = image_urls[1] if len(image_urls) > 1 else ""
+        image_3 = image_urls[2] if len(image_urls) > 2 else ""
+
+        description = self._description(item.get("inventory_unit_descriptions") or [])
+        features = ", ".join(item.get("floorplan_feature") or item.get("feature_list") or [])
+
+        exterior_colors = item.get("exterior_color_name") or item.get("exterior_colors") or []
+        if isinstance(exterior_colors, list):
+            exterior_color = ", ".join(str(color) for color in exterior_colors if color)
+        else:
+            exterior_color = str(exterior_colors or "")
+
+        length = item.get("vehicle_body_length")
+        length = str(length) if length not in (None, 0, "") else ""
+
+        dry_weight = item.get("dry_weight")
+        dry_weight = str(dry_weight) if dry_weight not in (None, 0, "") else ""
+
+        sleeps = item.get("max_sleeping_count")
+        sleeps = str(sleeps) if sleeps not in (None, 0, "") else ""
+
+        mileage_value = item.get("odometer")
+        mileage_value = str(mileage_value) if mileage_value not in (None, 0, "") else ""
+        mileage_unit = "miles" if mileage_value else ""
+
+        special_tag = ""
+        custom_label_0 = (item.get("lot_status") or "").strip()
 
         try:
-            sk = hashlib.md5(vin.encode('utf8') + title.encode('utf8') + url.encode('utf8')).hexdigest()
+            sk = hashlib.md5((vin + title + url).encode("utf8")).hexdigest()
         except Exception:
-            sk = hashlib.md5(url.encode('utf8')).hexdigest()
+            sk = hashlib.md5(url.encode("utf8")).hexdigest()
 
         row = {
             "sk": sk,
             "dealership_name": dealership_name,
-            "dealer_type": dealer_type,
+            "dealer_type": "RV",
             "dealership_address": dealership_address,
             "dealership_phone": dealership_phone,
             "store_code": store_code,
-            "dealer_url": dealer_url,
-            "cms": cms,
-            "condition_": condition_,
+            "dealer_url": "https://rvcountry.com/",
+            "cms": "Coast Technology",
+            "condition_": condition,
             "year_": year,
             "make": make,
             "model": model,
@@ -187,7 +181,7 @@ class RvcountrySpider(scrapy.Spider):
             "price": price,
             "savings": savings,
             "finance_option": finance_option,
-            "special_tag": Special_Tag,
+            "special_tag": special_tag,
             "type_": type_,
             "sub_type": sub_type,
             "location": location,
@@ -198,28 +192,76 @@ class RvcountrySpider(scrapy.Spider):
             "description": description,
             "trim": trim,
             "length": length,
-            "doors": doors,
-            "drivetrain": Drivetrain,
-            "fuel_type": Fuel_Type,
+            "doors": "",
+            "drivetrain": (item.get("driveline_type") or "").strip(),
+            "fuel_type": (item.get("fuel_type") or "").strip(),
             "exterior_color": exterior_color,
-            "interior_color": interior_color,
+            "interior_color": "",
             "sleeps": sleeps,
-            "seats": seats,
+            "seats": "",
             "dry_weight": dry_weight,
             "mileage_value": mileage_value,
             "mileage_unit": mileage_unit,
-            "engine": engine,
-            "transmission": Transmission,
-            "body_style": body_style,
-            "features": Features,
+            "engine": (item.get("engine") or "").strip(),
+            "transmission": "",
+            "body_style": "",
+            "features": features,
             "custom_label_0": custom_label_0,
-            "custom_label_1": custom_label_1,
-            "custom_label_2": custom_label_2,
+            "custom_label_1": "",
+            "custom_label_2": "",
             "creation_date": self.creation_date,
         }
 
         try:
             supabase.table("scrap_rawdata").upsert(row, on_conflict="sk,creation_date").execute()
             self.logger.info("Upserted: %s", title)
-        except Exception as e:
-            self.logger.error("Error in parsing or saving data: %s", e)
+        except Exception as exc:
+            self.logger.error("Supabase error for %s: %s", url, exc)
+
+    @staticmethod
+    def _rvcountry_url(urls):
+        for candidate in urls:
+            if candidate and "rvcountry.com/inventory/" in candidate:
+                return candidate
+        for candidate in urls:
+            if candidate and "rvcountry.com" in candidate:
+                return candidate
+        return ""
+
+    @staticmethod
+    def _format_price(value):
+        if value in (None, "", 0):
+            return ""
+        try:
+            amount = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if amount.is_integer():
+            return f"${int(amount):,}"
+        return f"${amount:,.2f}"
+
+    @staticmethod
+    def _image_urls(item):
+        urls = []
+        for image in item.get("images") or []:
+            if isinstance(image, dict):
+                image_url = image.get("url")
+                if image_url:
+                    urls.append(image_url)
+            elif image:
+                urls.append(str(image))
+        return urls
+
+    @staticmethod
+    def _description(descriptions):
+        parts = []
+        for block in descriptions:
+            if not isinstance(block, dict):
+                continue
+            heading = (block.get("heading") or "").strip()
+            text = (block.get("description") or "").strip()
+            if heading and text:
+                parts.append(f"{heading}: {text}")
+            elif text:
+                parts.append(text)
+        return " ".join(parts).strip()

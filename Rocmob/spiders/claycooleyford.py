@@ -10,7 +10,7 @@ from Rocmob.rocmob_cfg import supabase
 class ClaycooleyfordSpider(scrapy.Spider):
     name = "claycooleyford"
     start_urls = ['https://www.claycooleyford.com/inventoryvdpsitemap.xml']
-
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.creation_date = datetime.now(timezone.utc).date().isoformat()

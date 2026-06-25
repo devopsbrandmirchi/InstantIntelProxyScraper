@@ -16,6 +16,8 @@ ENV/
 .scrapy/
 # Test spiders
 testspider/
+# Legacy spider backups (local reference only)
+Rocmob/spiders/rvcountry_legacy.py
 # Logs
 *.log
 logs/
