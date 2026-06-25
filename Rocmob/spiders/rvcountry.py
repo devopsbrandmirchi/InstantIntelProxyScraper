@@ -15,6 +15,7 @@ class RvcountrySpider(scrapy.Spider):
     inventory_page = "https://rvcountry.com/rvs-for-sale"
     api_url = "https://inventory.coasttechnology.org/api/v3/inventory/"
     company_id = "36"
+    location_name = "Fresno CA"
     per_page = 50
 
     def __init__(self, *args, **kwargs):
@@ -28,6 +29,7 @@ class RvcountrySpider(scrapy.Spider):
         params = {
             "filters[displayOnWebsite][$eq]": "true",
             "filters[lot][$ne]": "BGN",
+            "filters[companyLocation][name][$in][0]": self.location_name,
             "sort[0]": "year:desc",
             "sort[1]": "received_date:desc",
             "company[0]": self.company_id,
@@ -81,9 +83,7 @@ class RvcountrySpider(scrapy.Spider):
         city = (location_info.get("city") or "").strip()
         state = (location_info.get("state") or "").strip()
         location = ", ".join(part for part in (city, state) if part)
-        dealership_name = "RV Country"
-        if city:
-            dealership_name = f"RV Country {city}"
+        dealership_name = "RV Country Fresno"
 
         address_parts = [
             (location_info.get("address") or "").strip(),
