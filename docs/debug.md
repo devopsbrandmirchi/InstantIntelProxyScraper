@@ -4,6 +4,35 @@ Quick reference for checking timers, logs, Scrapy runs, and environment on the D
 
 ---
 
+## After `git pull` on the droplet
+
+Pulling new code is usually enough. **Scheduled Scrapy and Hoot jobs do not need a restart** — each timer run starts a fresh process and loads Python from disk (`scrapy-spider@.service` and Hoot units are `Type=oneshot`).
+
+**Typical update:**
+
+```bash
+cd /root/scrappingproxy
+git pull origin main
+```
+
+| What changed in the pull | Extra step on the server |
+|--------------------------|---------------------------|
+| Spider / pipeline code only (e.g. `Rocmob/spiders/*.py`) | None — next timer run or manual `systemctl start scrapy-spider@<name>.service` uses new code |
+| `requirements.txt` | `source .venv/bin/activate && pip install -r requirements.txt` |
+| `scraper-bridge/` (API / “Run spider” UI) | `sudo systemctl restart scraper-bridge` |
+| `deploy/systemd/*.service` or `*.timer` | Copy to `/etc/systemd/system/`, then `sudo systemctl daemon-reload` (re-enable timers if new) |
+| `.env` only | No restart for spiders; restart **scraper-bridge** if it reads env only at startup |
+
+**Notes:**
+
+- A spider **already running** (timer, bridge, or manual `scrapy crawl`) keeps the old code until it exits; the **next** run picks up the pull.
+- Bridge-triggered crawls spawn `scrapy` as a subprocess, so new spider code applies even without restarting the bridge — restart the bridge only when **bridge** code changed.
+- To run one spider immediately after a pull: `systemctl start scrapy-spider@rvcountry.service` (replace `rvcountry` with spider name).
+
+See also: `scraper-bridge/README.md` (bridge restart), `docs/digitalocean-setup.md` (first-time install).
+
+---
+
 ## Scrapy (manual test)
 
 From project directory with venv active:
@@ -11,7 +40,7 @@ From project directory with venv active:
 ```bash
 cd /root/scrappingproxy
 source .venv/bin/activate
-#git pull origin main
+# After deploy: git pull origin main — see "After git pull on the droplet" above
 python -m scrapy list
 python -m scrapy crawl Livingston
 python -m scrapy crawl Livingston -s LOG_LEVEL=INFO
