@@ -1,210 +1,282 @@
-import scrapy
-import re
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
-from scrapy import Selector
+
+import scrapy
 from scrapy.http import Request
+
 from Rocmob.rocmob_cfg import supabase
 
 
 def _str(value):
     if value is None:
-        return ''
+        return ""
     if isinstance(value, list):
-        return ' '.join(str(x) for x in value).strip()
+        return " ".join(str(x) for x in value).strip()
     return str(value).strip()
+
+
+def _extract_bus2_state(html: str):
+    """Parse SSR bootstrap for ws-inv-data / inventory-data-bus2 from page HTML."""
+    match = re.search(
+        r"DDC\.WS\.state\['ws-inv-data'\]\['inventory-data-bus2'\]\s*=\s*(\{)",
+        html,
+    )
+    if not match:
+        return None
+    start = match.start(1)
+    depth = 0
+    in_str = False
+    esc = False
+    end = None
+    for i, ch in enumerate(html[start:], start):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if not end:
+        return None
+    try:
+        return json.loads(html[start:end])
+    except json.JSONDecodeError:
+        return None
+
+
+def _tracking_map(item: dict) -> dict:
+    out = {}
+    for entry in item.get("trackingAttributes") or []:
+        if isinstance(entry, dict) and entry.get("name"):
+            out[entry["name"]] = entry.get("value") or ""
+    return out
+
+
+def _attr_map(item: dict) -> dict:
+    out = {}
+    for entry in item.get("attributes") or []:
+        if isinstance(entry, dict) and entry.get("name"):
+            out[entry["name"]] = entry.get("value") or ""
+    return out
+
+
+def _pricing_fields(item: dict):
+    """Return (msrp, price, savings) from pricing / trackingPricing."""
+    tracking = item.get("trackingPricing") or {}
+    pricing = item.get("pricing") or {}
+    dprice = pricing.get("dprice") or []
+
+    msrp = ""
+    price = ""
+    savings = ""
+
+    for row in dprice:
+        if not isinstance(row, dict):
+            continue
+        type_class = (row.get("typeClass") or "").lower()
+        value = _str(row.get("value"))
+        if type_class == "msrp" and value:
+            msrp = value
+        if row.get("isFinalPrice") and value:
+            price = value
+        if row.get("isDiscount") and value:
+            savings = value
+
+    if not msrp:
+        msrp = _str(tracking.get("msrp") or pricing.get("retailPrice"))
+    if not price:
+        price = _str(
+            tracking.get("internetPrice")
+            or tracking.get("salePrice")
+            or tracking.get("askingPrice")
+        )
+    if not savings:
+        savings = _str(tracking.get("ABCRule") or "")
+
+    return msrp, price, savings
 
 
 class McdavidfordSpider(scrapy.Spider):
     name = "mcdavid"
-    start_urls = ['https://www.mcdavidford.com/apis/widget/INVENTORY_LISTING_DEFAULT_AUTO_ALL:inventory-data-bus1/getInventory?start=0']
+    allowed_domains = ["mcdavidford.com"]
+
+    # Legacy bus1 getInventory is deprecated (empty inventory + often 403).
+    # Dealer.com now SSRs inventory into inventory-data-bus2 on listing pages.
+    listing_url = "https://www.mcdavidford.com/all-inventory/index.htm"
+
+    custom_settings = {
+        "DOWNLOAD_HANDLERS": {
+            "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+            "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+        },
+        "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
+        "PLAYWRIGHT_BROWSER_TYPE": "chromium",
+        "DOWNLOAD_DELAY": 1.5,
+        "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
+        "DOWNLOAD_TIMEOUT": 90,
+        "ENABLE_PROXY": False,
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.creation_date = datetime.now(timezone.utc).date().isoformat()
+        self.total_count = None
+        self.total_processed = 0
+        self.inserted_count = 0
 
-    def parse(self, response):
-        data = json.loads(response.text)
-        pagestart = data['pageInfo']['pageStart']
-        totalcount = data['pageInfo']['totalCount']
-        nodes = data['pageInfo']['trackingData']
-        for i in nodes:
-            location = i['address']['accountName']
-            url = 'https://www.mcdavidford.com' + i['link']
-            vin = i['vin']
-            year = i['year']
-            trim = i.get('trim', '')
-            stocknumber = i['stockNumber']
-            bodyStyle = i['bodyStyle']
-            make = i['make']
-            model = i['model']
+    def start_requests(self):
+        yield self._listing_request(0)
 
-            try:
-                msrp = i['pricing']['msrp']
-            except (KeyError, TypeError):
-                msrp = ''
-            condition_ = i['newOrUsed']
-            try:
-                price = i['pricing']['finalPrice']
-            except (KeyError, TypeError):
-                price = ''
-            try:
-                savings = i['pricing']['ABCRule']
-            except (KeyError, TypeError):
-                savings = ''
-            transmission = i.get('transmission', '')
-            ext_color = i.get('exteriorColor', '')
-            fuel_type = i.get('fuelType', '')
-            engine = i.get('engine', '')
-            drivetrain = i.get('driveLine', '')
-            doors = i.get('doors', '')
-            int_color = i.get('interiorColor', '')
-            milege_value = i.get('cityFuelEfficiency', '') or i.get('highwayFuelEfficiency', '')
-            mileage_unit = 'MPG' if milege_value else ''
-            images = i.get('images', []) or []
-            image_1 = image_2 = image_3 = ''
-            if len(images) >= 3:
-                image_1 = images[0].get('uri', '') or ''
-                image_2 = images[1].get('uri', '') or ''
-                image_3 = images[2].get('uri', '') or ''
-            elif len(images) == 2:
-                image_1 = images[0].get('uri', '') or ''
-                image_2 = images[1].get('uri', '') or ''
-            elif len(images) == 1:
-                image_1 = images[0].get('uri', '') or ''
+    def _listing_request(self, start: int):
+        url = self.listing_url if start <= 0 else f"{self.listing_url}?start={start}"
+        return Request(
+            url,
+            callback=self.parse_listing,
+            dont_filter=True,
+            meta={
+                "page_start": start,
+                "playwright": True,
+                "playwright_context": "mcdavid_session",
+            },
+        )
 
-            yield Request(
-                url,
-                callback=self.parse_next,
-                meta={
-                    'vin': vin, 'year': year, 'trim': trim, 'stocknumber': stocknumber,
-                    'bodyStyle': bodyStyle, 'make': make, 'model': model,
-                    'msrp': msrp, 'condition_': condition_, 'price': price, 'savings': savings,
-                    'transmission': transmission, 'ext_color': ext_color, 'fuel_type': fuel_type,
-                    'engine': engine, 'drivetrain': drivetrain, 'doors': doors,
-                    'int_color': int_color, 'milege_value': milege_value, 'mileage_unit': mileage_unit,
-                    'image_1': image_1, 'image_2': image_2, 'image_3': image_3,
-                    'location': location,
-                }
+    def parse_listing(self, response):
+        blob = _extract_bus2_state(response.text)
+        if not blob:
+            self.logger.error(
+                "Could not find inventory-data-bus2 SSR payload on %s", response.url
             )
-        if totalcount != 0:
-            page_no = int(pagestart) + 18
-            next_url = 'https://www.mcdavidford.com/apis/widget/INVENTORY_LISTING_DEFAULT_AUTO_ALL:inventory-data-bus1/getInventory?start={}'.format(page_no)
-            yield Request(next_url, callback=self.parse)
+            return
 
-    def parse_next(self, response):
-        sel = Selector(response)
-        url = response.url
-        vin = response.meta.get('vin', '')
-        year = response.meta.get('year', '')
-        trim = response.meta.get('trim', '')
-        stock_number = response.meta.get('stocknumber', '')
-        make = response.meta.get('make', '')
+        wis = blob.get("WIS") or {}
+        page_info = wis.get("pageInfo") or {}
+        inventory = wis.get("inventory") or []
+        accounts = blob.get("accounts") or {}
 
-        model = ''
-        if 'Mercedes-Benz' in url:
-            match = re.search(r'Mercedes-Benz-(.*?)(?:-in-|/|$)', url)
-            if match:
-                model = match.group(1)
-        else:
-            match = re.search(r'\d{4}-[^-]+-(.*?)-in-', url)
-            if match:
-                model = match.group(1)
-        brand = model
+        total_count = int(page_info.get("totalCount") or 0)
+        page_start = int(page_info.get("pageStart") or response.meta.get("page_start") or 0)
+        page_size = int(page_info.get("pageSize") or len(inventory) or 24)
 
-        msrp = response.meta.get('msrp', '')
-        condn_ = sel.xpath("//h1[@class='vehicle-title m-0 line-height-reset']/span[1]/text()").extract()
-        if condn_:
-            condition_ = condn_[0].split()[0]
-        else:
-            condition_ = response.meta.get('condition_', '')
-        price = response.meta.get('price', '')
-        savings = ''.join(sel.xpath('//dd[@class="discount text-success"]//text()').extract()).replace('-', '').strip()
-        if not savings and (msrp or price):
-            savings = ''
+        if self.total_count is None:
+            self.total_count = total_count
+            self.logger.info(
+                "McDavid inventory via SSR bus2: totalCount=%s pageSize=%s",
+                total_count,
+                page_size,
+            )
 
-        transmission = ''.join(sel.xpath('//li[@class="spec-item"]//span[contains(text(),"Transmission: ")]//following-sibling::span//text()').extract()) or ''.join(sel.xpath('//span[@class="package-title"][contains(text(),"Transmission:")]//text()').extract()).replace('Transmission: ', '')
-        if not transmission:
+        if not inventory:
+            self.logger.warning("Empty inventory page at start=%s", page_start)
+            return
+
+        for item in inventory:
             try:
-                transmission = sel.xpath('//dt[contains(text(),"Transmission")]//following-sibling::dd//span//text()').extract()[0]
-            except (IndexError, TypeError):
-                transmission = response.meta.get('transmission', '')
+                self._upsert_vehicle(item, accounts)
+                self.total_processed += 1
+            except Exception as exc:
+                self.logger.error("Error processing vehicle: %s", exc)
 
-        ext_color = response.meta.get('ext_color', '')
-        fuel_type = response.meta.get('fuel_type', '')
-        engine = ''.join(sel.xpath('//li[@class="spec-item"]//span[contains(text(),"Engine: ")]//following-sibling::span//text()').extract()) or ''.join(sel.xpath('//span[@class="package-title"][contains(text(),"Engine")]//text()').extract()).replace('Engine: ', '')
-        if not engine:
-            try:
-                engine = sel.xpath('//dt[contains(text(),"Engine")]//following-sibling::dd//span//text()').extract()[0]
-            except (IndexError, TypeError):
-                engine = response.meta.get('engine', '')
+        next_start = page_start + len(inventory)
+        if (
+            self.total_count
+            and next_start < self.total_count
+            and len(inventory) > 0
+        ):
+            yield self._listing_request(next_start)
+        else:
+            self.logger.info(
+                "Finished: processed=%s totalCount=%s upserted=%s",
+                self.total_processed,
+                self.total_count,
+                self.inserted_count,
+            )
 
-        drivetrain = response.meta.get('drivetrain', '')
-        doors = response.meta.get('doors', '')
-        int_color = response.meta.get('int_color', '')
-        mileage_value = response.meta.get('milege_value', '')
-        mileage_unit = response.meta.get('mileage_unit', '')
-        image_1 = response.meta.get('image_1', '')
-        image_2 = response.meta.get('image_2', '')
-        image_3 = response.meta.get('image_3', '')
+    def _upsert_vehicle(self, item: dict, accounts: dict):
+        ta = _tracking_map(item)
+        attrs = _attr_map(item)
 
-        Finance_option = Special_Tag = sub_type = description = length = sleeps = ''
-        custom_label_0 = custom_label_1 = custom_label_2 = ''
+        vin = _str(item.get("vin"))
+        year = _str(item.get("year"))
+        make = _str(item.get("make"))
+        model = _str(item.get("model"))
+        trim = _str(item.get("trim"))
+        stock_number = _str(item.get("stockNumber") or attrs.get("stockNumber"))
+        body_style = _str(item.get("bodyStyle"))
+        condition_ = _str(item.get("condition") or item.get("type"))
+        fuel_type = _str(item.get("fuelType") or ta.get("fuelType") or ta.get("normalFuelType"))
+        transmission = _str(ta.get("transmission") or attrs.get("transmission"))
+        engine = _str(ta.get("engine") or attrs.get("engine"))
+        engine_size = _str(ta.get("engineSize"))
+        if engine_size and engine_size not in engine:
+            engine = f"{engine_size} {engine}".strip()
+        drivetrain = _str(ta.get("driveLine"))
+        doors = _str(ta.get("doors"))
+        ext_color = _str(ta.get("exteriorColor") or attrs.get("exteriorColor"))
+        int_color = _str(ta.get("interiorColor") or attrs.get("interiorColor"))
+        odometer = _str(ta.get("odometer"))
+        mileage_value = odometer or _str(attrs.get("fuelEconomy") or ta.get("cityFuelEconomy"))
+        mileage_unit = "miles" if odometer else ("MPG" if mileage_value else "")
 
-        try:
-            dry_weight = ''.join(sel.xpath('//span[contains(text(),"Curb weight: ")]//following-sibling::span//text()').extract()).split('(')[-1].strip(')')
-        except (IndexError, TypeError):
-            dry_weight = ''
-        seats = ''.join(sel.xpath('//span[contains(text(),"Max seating capacity: ")]//following-sibling::span//text()').extract())
-        title = ''.join(sel.xpath('//h1//text()').extract())
+        msrp, price, savings = _pricing_fields(item)
 
-        dealership_name = 'David McDavid Ford'
-        dealer_type = 'Auto'
-        dealership_address = '300 West Loop 820 S Fort Worth, TX 76108'
-        dealership_phone = ''
-        store_code = ''
-        dealer_url = 'https://www.mcdavidford.com/'
-        cms = ''
-        features = ' '.join(sel.xpath('//div[@data-spec-category="standard features"]//text()').extract()).strip()
+        raw_link = _str(item.get("link"))
+        url = f"https://www.mcdavidford.com{raw_link}" if raw_link.startswith("/") else raw_link
+        title = _str(item.get("title")) or f"{condition_} {year} {make} {model}".strip()
 
-        bodystyle = response.meta.get('bodyStyle', '') or ''
-        words = bodystyle.split(" ", 1)
-        type_ = words[0] if words else ''
-        sub_type = words[1] if len(words) > 1 else ''
-        body_style = type_
+        images = item.get("images") or []
+        image_1 = images[0].get("uri", "") if len(images) > 0 and isinstance(images[0], dict) else ""
+        image_2 = images[1].get("uri", "") if len(images) > 1 and isinstance(images[1], dict) else ""
+        image_3 = images[2].get("uri", "") if len(images) > 2 and isinstance(images[2], dict) else ""
 
-        location = ''.join(sel.xpath('//li[contains(@class, "liUnit LiInvLocation")]//label[contains(text(), "Location")]/following-sibling::span[@class="spnUnitValue"]/text()').extract()).strip()
-        if not location:
-            location = response.meta.get('location', '')
+        account_id = _str(item.get("accountId"))
+        account = accounts.get(account_id) or {}
+        address = account.get("address") or {}
+        location = _str(address.get("accountName") or account.get("name"))
 
-        try:
-            sk = hashlib.md5((_str(vin) + _str(title) + url).encode('utf8')).hexdigest()
-        except Exception:
-            sk = hashlib.md5(url.encode('utf8')).hexdigest()
+        words = body_style.split(" ", 1)
+        type_ = words[0] if words and words[0] else ""
+        sub_type = words[1] if len(words) > 1 else ""
+
+        if not vin:
+            vin = f"TEMP-{stock_number or hashlib.md5((title + url).encode()).hexdigest()[:10]}"
+            self.logger.warning("Missing VIN; using %s", vin)
+
+        sk = hashlib.md5((vin + title + url).encode("utf-8")).hexdigest()
 
         row = {
             "sk": sk,
-            "dealership_name": dealership_name,
-            "dealer_type": dealer_type,
-            "dealership_address": dealership_address,
-            "dealership_phone": dealership_phone,
-            "store_code": store_code,
-            "dealer_url": dealer_url,
-            "cms": cms,
+            "dealership_name": "David McDavid Ford",
+            "dealer_type": "Auto",
+            "dealership_address": "300 West Loop 820 S Fort Worth, TX 76108",
+            "dealership_phone": _str(account.get("phone")),
+            "store_code": "",
+            "dealer_url": "https://www.mcdavidford.com/",
+            "cms": "Dealer.com",
             "condition_": condition_,
-            "year_": _str(year),
-            "make": _str(make),
-            "model": _str(model),
-            "brand": _str(brand),
-            "vin": _str(vin),
-            "stock_number": _str(stock_number),
+            "year_": year,
+            "make": make,
+            "model": model,
+            "brand": model,
+            "vin": vin,
+            "stock_number": stock_number,
             "url": url,
-            "msrp": _str(msrp),
-            "price": _str(price),
-            "savings": _str(savings),
-            "finance_option": Finance_option,
-            "special_tag": Special_Tag,
+            "msrp": msrp,
+            "price": price,
+            "savings": savings,
+            "finance_option": "",
+            "special_tag": "",
             "type_": type_,
             "sub_type": sub_type,
             "location": location,
@@ -212,31 +284,32 @@ class McdavidfordSpider(scrapy.Spider):
             "image_url_2": _str(image_2),
             "image_url_3": _str(image_3),
             "title": title,
-            "description": description,
-            "trim": _str(trim),
-            "length": length,
-            "doors": _str(doors),
-            "drivetrain": _str(drivetrain),
-            "fuel_type": _str(fuel_type),
-            "exterior_color": _str(ext_color),
-            "interior_color": _str(int_color),
-            "sleeps": sleeps,
-            "seats": _str(seats),
-            "dry_weight": _str(dry_weight),
-            "mileage_value": _str(mileage_value),
+            "description": "",
+            "trim": trim,
+            "length": "",
+            "doors": doors,
+            "drivetrain": drivetrain,
+            "fuel_type": fuel_type,
+            "exterior_color": ext_color,
+            "interior_color": int_color,
+            "sleeps": "",
+            "seats": "",
+            "dry_weight": "",
+            "mileage_value": mileage_value,
             "mileage_unit": mileage_unit,
-            "engine": _str(engine),
-            "transmission": _str(transmission),
-            "body_style": body_style,
-            "features": features,
-            "custom_label_0": custom_label_0,
-            "custom_label_1": custom_label_1,
-            "custom_label_2": custom_label_2,
+            "engine": engine,
+            "transmission": transmission,
+            "body_style": type_ or body_style,
+            "features": "",
+            "custom_label_0": "",
+            "custom_label_1": "",
+            "custom_label_2": "",
             "creation_date": self.creation_date,
         }
 
         try:
             supabase.table("scrap_rawdata").upsert(row, on_conflict="sk,creation_date").execute()
+            self.inserted_count += 1
             self.logger.info("Upserted: %s", title)
-        except Exception as e:
-            self.logger.error("Supabase error for %s: %s", url, e)
+        except Exception as exc:
+            self.logger.error("Supabase error for %s: %s", url, exc)
