@@ -1,12 +1,21 @@
 import hashlib
 import json
+import os
 import re
+import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import scrapy
 from scrapy.http import Request
 
 from Rocmob.rocmob_cfg import supabase
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 def _str(value):
@@ -15,6 +24,39 @@ def _str(value):
     if isinstance(value, list):
         return " ".join(str(x) for x in value).strip()
     return str(value).strip()
+
+
+def _playwright_proxy_config(session_id=None):
+    """Build Playwright proxy dict from PROXY_URL / PROXY_AUTH (Scrapy meta proxy is ignored by PW)."""
+    proxy_url = (os.getenv("PROXY_URL") or "").strip()
+    if not proxy_url:
+        return None
+
+    parsed = urlparse(proxy_url if "://" in proxy_url else f"http://{proxy_url}")
+    host = parsed.hostname
+    if not host:
+        return None
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    server = f"{parsed.scheme or 'http'}://{host}:{port}"
+
+    auth = (os.getenv("PROXY_AUTH") or "").strip()
+    auth_list = [
+        x.strip()
+        for x in (os.getenv("PROXY_AUTH_LIST") or "").split(",")
+        if x.strip()
+    ]
+    if auth_list:
+        auth = auth_list[0] if not session_id else auth_list[hash(session_id) % len(auth_list)]
+
+    cfg = {"server": server}
+    if auth and ":" in auth:
+        username, password = auth.split(":", 1)
+        # Bright Data / Luminati: append -session-<id> to rotate egress IP per context
+        if session_id and "-session-" not in username:
+            username = f"{username}-session-{session_id}"
+        cfg["username"] = username
+        cfg["password"] = password
+    return cfg
 
 
 def _extract_bus2_state(html: str):
@@ -123,10 +165,16 @@ class McdavidfordSpider(scrapy.Spider):
         },
         "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
         "PLAYWRIGHT_BROWSER_TYPE": "chromium",
-        "DOWNLOAD_DELAY": 1.5,
-        "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
-        "DOWNLOAD_TIMEOUT": 90,
+        # Droplet IP is rate-limited (429); Playwright ignores Scrapy ProxyMiddleware —
+        # proxy is applied via playwright_context_kwargs from PROXY_URL/PROXY_AUTH.
         "ENABLE_PROXY": False,
+        "DOWNLOAD_DELAY": 3,
+        "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
+        "DOWNLOAD_TIMEOUT": 120,
+        "RETRY_TIMES": 3,
+        # Handle 429 ourselves with a fresh proxy session (Scrapy retries reuse same IP).
+        "RETRY_HTTP_CODES": [500, 502, 503, 504, 522, 524, 408],
+        "HTTPERROR_ALLOWED_CODES": [429],
     }
 
     def __init__(self, *args, **kwargs):
@@ -135,29 +183,90 @@ class McdavidfordSpider(scrapy.Spider):
         self.total_count = None
         self.total_processed = 0
         self.inserted_count = 0
+        self._session_id = uuid.uuid4().hex[:12]
+        self._rate_limit_retries = {}
 
     def start_requests(self):
+        proxy = _playwright_proxy_config(self._session_id)
+        if proxy:
+            self.logger.info(
+                "Playwright proxy enabled: %s (session %s)",
+                proxy.get("server"),
+                self._session_id,
+            )
+        else:
+            self.logger.warning(
+                "No PROXY_URL set; Playwright will go direct and may hit 429 on the droplet."
+            )
         yield self._listing_request(0)
 
-    def _listing_request(self, start: int):
+    def _listing_request(self, start, session_id=None):
+        session_id = session_id or self._session_id
         url = self.listing_url if start <= 0 else f"{self.listing_url}?start={start}"
+        meta = {
+            "page_start": start,
+            "proxy_session": session_id,
+            "playwright": True,
+            # Unique context name so proxy session sticks for the crawl, and can rotate on 429.
+            "playwright_context": f"mcdavid_{session_id}",
+        }
+        proxy = _playwright_proxy_config(session_id)
+        context_kwargs = {
+            "user_agent": USER_AGENT,
+            "ignore_https_errors": True,
+        }
+        if proxy:
+            context_kwargs["proxy"] = proxy
+        meta["playwright_context_kwargs"] = context_kwargs
         return Request(
             url,
             callback=self.parse_listing,
             dont_filter=True,
-            meta={
-                "page_start": start,
-                "playwright": True,
-                "playwright_context": "mcdavid_session",
-            },
+            meta=meta,
         )
 
+    def _retry_with_new_session(self, start: int, reason: str):
+        key = str(start)
+        attempts = self._rate_limit_retries.get(key, 0) + 1
+        self._rate_limit_retries[key] = attempts
+        if attempts > 6:
+            self.logger.error(
+                "Giving up on start=%s after %s rate-limit/empty-page retries (%s)",
+                start,
+                attempts,
+                reason,
+            )
+            return None
+        self._session_id = uuid.uuid4().hex[:12]
+        self.logger.warning(
+            "%s at start=%s; rotating Playwright proxy session to %s (attempt %s)",
+            reason,
+            start,
+            self._session_id,
+            attempts,
+        )
+        return self._listing_request(start, session_id=self._session_id)
+
     def parse_listing(self, response):
+        page_start = int(response.meta.get("page_start") or 0)
+
+        if response.status == 429:
+            nxt = self._retry_with_new_session(page_start, "HTTP 429")
+            if nxt:
+                yield nxt
+            return
+
         blob = _extract_bus2_state(response.text)
         if not blob:
-            self.logger.error(
-                "Could not find inventory-data-bus2 SSR payload on %s", response.url
+            nxt = self._retry_with_new_session(
+                page_start, "Missing inventory-data-bus2 SSR payload"
             )
+            if nxt:
+                yield nxt
+            else:
+                self.logger.error(
+                    "Could not find inventory-data-bus2 SSR payload on %s", response.url
+                )
             return
 
         wis = blob.get("WIS") or {}
@@ -166,7 +275,7 @@ class McdavidfordSpider(scrapy.Spider):
         accounts = blob.get("accounts") or {}
 
         total_count = int(page_info.get("totalCount") or 0)
-        page_start = int(page_info.get("pageStart") or response.meta.get("page_start") or 0)
+        page_start = int(page_info.get("pageStart") or page_start)
         page_size = int(page_info.get("pageSize") or len(inventory) or 24)
 
         if self.total_count is None:
@@ -178,8 +287,13 @@ class McdavidfordSpider(scrapy.Spider):
             )
 
         if not inventory:
-            self.logger.warning("Empty inventory page at start=%s", page_start)
+            nxt = self._retry_with_new_session(page_start, "Empty inventory page")
+            if nxt:
+                yield nxt
             return
+
+        # Success for this page — clear retry counter
+        self._rate_limit_retries.pop(str(page_start), None)
 
         for item in inventory:
             try:
