@@ -53,8 +53,10 @@ Edit `.env` and set:
 - `SUPABASE_SERVICE_ROLE_KEY` (Scrapy / pipelines)
 - `HOOT_SUPABASE_SECRET_KEY` (optional but recommended for `hoot-import.service` and `hoot-inventorydata.service`: Supabase **Secret** key `sb_secret_...` or legacy `service_role` JWT)
 - `ENABLE_PROXY=true` or `false`
-- `PROXY_URL`
+- `PROXY_URL` (use `http://brd.superproxy.io:44445/`; do not use legacy `zproxy.*` hosts or ports `22225` / `33335`)
 - `PROXY_AUTH` (or `PROXY_AUTH_LIST`)
+
+Allow outbound TCP to `brd.superproxy.io:44445` if the droplet firewall or `ufw` restricts egress. DigitalOcean allows all outbound traffic by default.
 
 **Hoot timers (optional):** Copy `deploy/systemd/hoot-import.service`, `hoot-import.timer`, `hoot-inventorydata.service`, and `hoot-inventorydata.timer` to `/etc/systemd/system/`, then `systemctl daemon-reload` and `systemctl enable --now hoot-import.timer hoot-inventorydata.timer` (CSV import **04:15 UTC**, `inventorydata` transfer **05:30 UTC**).
 
@@ -158,6 +160,36 @@ See all scrape service logs:
 
 ```bash
 journalctl -u 'scrapy-spider@*.service' -n 300 --no-pager
+```
+
+## Bright Data port 44445 (required after deploy)
+
+Bright Data retired ports `22225` / `33335` and legacy `zproxy.*` hostnames. After pulling this change, update live config — repo defaults do not override an existing `.env` or GitHub secret.
+
+On the droplet:
+
+```bash
+cd /root/scrappingproxy
+# Confirm current value (host/port only)
+grep '^PROXY_URL=' .env
+# Set the new endpoint; leave PROXY_AUTH unchanged
+sed -i 's|^PROXY_URL=.*|PROXY_URL=http://brd.superproxy.io:44445/|' .env
+grep '^PROXY_URL=' .env
+```
+
+Allow outbound TCP `44445` if the droplet firewall or `ufw` restricts egress, then test:
+
+```bash
+set -a && source /root/scrappingproxy/.env && set +a
+curl --proxy "$PROXY_URL" --proxy-user "$PROXY_AUTH" "https://geo.brdtest.com/mygeo.json"
+```
+
+If a Bright Data CA is installed under `/usr/local/share/ca-certificates/`, replace it with `brightdata_root_ca_44445.crt` from [brightdata_proxy_ca.zip](https://brightdata.com/static/brightdata_proxy_ca.zip) and run `sudo update-ca-certificates`.
+
+GitHub Actions uses `secrets.PROXY_URL`. After merge, set that secret to `http://brd.superproxy.io:44445/`:
+
+```bash
+gh secret set PROXY_URL --body 'http://brd.superproxy.io:44445/'
 ```
 
 ## Notes

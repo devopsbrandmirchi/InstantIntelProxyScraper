@@ -82,7 +82,7 @@ Hoot pipeline (optional on hosts that run `hoot-import` / `hoot-inventorydata` t
 Proxy settings:
 
 - `ENABLE_PROXY` (`true`/`false`, default `true`)
-- `PROXY_URL` (example: `http://brd.superproxy.io:33335/`)
+- `PROXY_URL` (example: `http://brd.superproxy.io:44445/`)
 - `PROXY_AUTH` (single credential: `username:password`)
 - `PROXY_AUTH_LIST` (optional rotation list, comma-separated)
 

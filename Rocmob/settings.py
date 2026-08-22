@@ -55,11 +55,11 @@ REDIRECT_ENABLED = True
 #}
 
 # Proxy configuration (required in production; set via environment variables)
-# PROXY_URL example: http://zproxy.lum-superproxy.io:22225/
+# PROXY_URL example: http://brd.superproxy.io:44445/
 # PROXY_AUTH example: username:password
 # PROXY_AUTH_LIST example: user1:pass1,user2:pass2
 ENABLE_PROXY = os.getenv("ENABLE_PROXY", "true").strip().lower() in {"1", "true", "yes"}
-PROXY_URL = os.getenv("PROXY_URL", "http://zproxy.lum-superproxy.io:22225/").strip()
+PROXY_URL = os.getenv("PROXY_URL", "http://brd.superproxy.io:44445/").strip()
 PROXY_AUTH = os.getenv("PROXY_AUTH", "").strip()
 PROXY_AUTH_LIST = [x.strip() for x in os.getenv("PROXY_AUTH_LIST", "").split(",") if x.strip()]
 HTTP_PROXY = PROXY_AUTH_LIST or ([PROXY_AUTH] if PROXY_AUTH else [])
