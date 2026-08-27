@@ -236,6 +236,37 @@ Server clock should be UTC or you must interpret logs accordingly (`timedatectl`
 
 ---
 
+## Journald size cap (applied on the droplet)
+
+Scheduled spiders log to journald (`StandardOutput=journal`). That store is **machine-wide** (all apps on the host, not only `scrappingproxy`). Uncapped, it grew to ~4 GB.
+
+**Live config on `ubuntu-s-2vcpu-4gb-sfo3-01-dv360` (2026-08-27):**
+
+- File: `/etc/systemd/journald.conf.d/size.conf`
+- `SystemMaxUse=1G`
+- `MaxRetentionSec=14day`
+
+After vacuum + restart, usage dropped from ~3.9 G to ~173 M. Disk went from 80% to 75% (62 G → 58 G used of 77 G).
+
+**Check / shrink (if the file is missing on a new host):**
+
+```bash
+journalctl --disk-usage
+df -h /
+journalctl --vacuum-size=800M
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/size.conf << 'EOF'
+[Journal]
+SystemMaxUse=1G
+MaxRetentionSec=14day
+EOF
+systemctl restart systemd-journald
+```
+
+Do not delete `/var/lib/docker` to free space. On this droplet that folder is ~45 G and belongs to the other apps (`dvproject`, `smartscrapping`, etc.).
+
+---
+
 ## Shared droplet with Docker
 
 - Prefer `apt update` and **targeted** `apt install` only; defer full `apt upgrade` to a maintenance window.

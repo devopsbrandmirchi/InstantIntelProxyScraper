@@ -192,6 +192,12 @@ GitHub Actions uses `secrets.PROXY_URL`. After merge, set that secret to `http:/
 gh secret set PROXY_URL --body 'http://brd.superproxy.io:44445/'
 ```
 
+## Journald size cap
+
+Spider stdout goes to journald. Cap it so logs do not fill the disk. This limit applies to **the whole droplet**, including other apps.
+
+On the production host this is already set (`/etc/systemd/journald.conf.d/size.conf`): `SystemMaxUse=1G`, `MaxRetentionSec=14day`. See `docs/debug.md` for check/vacuum commands.
+
 ## Notes
 
 - If proxy returns `407 ... ip_forbidden`, your proxy account is blocking the droplet IP. Update proxy provider access settings or disable proxy.
