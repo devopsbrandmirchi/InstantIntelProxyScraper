@@ -18,6 +18,7 @@ ENV/
 testspider/
 # Legacy spider backups (local reference only)
 Rocmob/spiders/rvcountry_legacy.py
+Rocmob/spiders/skyriverrv_old_backup.py
 # Logs
 *.log
 logs/
