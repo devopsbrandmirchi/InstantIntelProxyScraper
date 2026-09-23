@@ -26,8 +26,10 @@ def _str(value):
     return str(value).strip()
 
 
-def _playwright_proxy_config(session_id=None):
+def _playwright_proxy_config(session_id=None, enabled=True):
     """Build Playwright proxy dict from PROXY_URL / PROXY_AUTH (Scrapy meta proxy is ignored by PW)."""
+    if not enabled:
+        return None
     proxy_url = (os.getenv("PROXY_URL") or "").strip()
     if not proxy_url:
         return None
@@ -165,9 +167,9 @@ class McdavidfordSpider(scrapy.Spider):
         },
         "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
         "PLAYWRIGHT_BROWSER_TYPE": "chromium",
-        # Droplet IP is rate-limited (429); Playwright ignores Scrapy ProxyMiddleware —
-        # proxy is applied via playwright_context_kwargs from PROXY_URL/PROXY_AUTH.
-        "ENABLE_PROXY": False,
+        # Playwright ignores Scrapy ProxyMiddleware; proxy is applied via
+        # playwright_context_kwargs from PROXY_URL / PROXY_AUTH when ENABLE_PROXY is true.
+        "ENABLE_PROXY": True,
         "DOWNLOAD_DELAY": 3,
         "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
         "DOWNLOAD_TIMEOUT": 120,
@@ -187,13 +189,17 @@ class McdavidfordSpider(scrapy.Spider):
         self._rate_limit_retries = {}
 
     def start_requests(self):
-        proxy = _playwright_proxy_config(self._session_id)
+        proxy = _playwright_proxy_config(
+            self._session_id, enabled=self.settings.getbool("ENABLE_PROXY", True)
+        )
         if proxy:
             self.logger.info(
                 "Playwright proxy enabled: %s (session %s)",
                 proxy.get("server"),
                 self._session_id,
             )
+        elif not self.settings.getbool("ENABLE_PROXY", True):
+            self.logger.info("ENABLE_PROXY is false; Playwright will go direct.")
         else:
             self.logger.warning(
                 "No PROXY_URL set; Playwright will go direct and may hit 429 on the droplet."
@@ -210,7 +216,9 @@ class McdavidfordSpider(scrapy.Spider):
             # Unique context name so proxy session sticks for the crawl, and can rotate on 429.
             "playwright_context": f"mcdavid_{session_id}",
         }
-        proxy = _playwright_proxy_config(session_id)
+        proxy = _playwright_proxy_config(
+            session_id, enabled=self.settings.getbool("ENABLE_PROXY", True)
+        )
         context_kwargs = {
             "user_agent": USER_AGENT,
             "ignore_https_errors": True,
