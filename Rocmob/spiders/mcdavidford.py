@@ -53,7 +53,9 @@ def _playwright_proxy_config(session_id=None, enabled=True):
     cfg = {"server": server}
     if auth and ":" in auth:
         username, password = auth.split(":", 1)
-        # Bright Data / Luminati: append -session-<id> to rotate egress IP per context
+        # Bright Data: US peer + sticky session per Playwright context
+        if "-country-" not in username:
+            username = f"{username}-country-us"
         if session_id and "-session-" not in username:
             username = f"{username}-session-{session_id}"
         cfg["username"] = username
@@ -158,6 +160,7 @@ class McdavidfordSpider(scrapy.Spider):
 
     # Legacy bus1 getInventory is deprecated (empty inventory + often 403).
     # Dealer.com now SSRs inventory into inventory-data-bus2 on listing pages.
+    home_url = "https://www.mcdavidford.com/"
     listing_url = "https://www.mcdavidford.com/all-inventory/index.htm"
 
     custom_settings = {
@@ -167,14 +170,22 @@ class McdavidfordSpider(scrapy.Spider):
         },
         "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
         "PLAYWRIGHT_BROWSER_TYPE": "chromium",
-        # Playwright applies PROXY_URL itself. Keep Scrapy ProxyMiddleware on for
-        # settings/logging, but listing requests set skip_proxy so we do not double-proxy.
+        # Let Playwright send its own User-Agent; a Scrapy UA mismatch looks automated.
+        "USER_AGENT": None,
+        "PLAYWRIGHT_LAUNCH_OPTIONS": {
+            "headless": True,
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
+        },
+        # Playwright applies PROXY_URL itself. Listing requests set skip_proxy so
+        # Scrapy ProxyMiddleware does not attach a second proxy.
         "ENABLE_PROXY": True,
         "DOWNLOAD_DELAY": 3,
         "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
         "DOWNLOAD_TIMEOUT": 120,
         "RETRY_TIMES": 3,
-        # Handle 429/403 ourselves with a fresh proxy session (Scrapy retries reuse same IP).
         "RETRY_HTTP_CODES": [500, 502, 503, 504, 522, 524, 408],
         "HTTPERROR_ALLOWED_CODES": [403, 429],
     }
@@ -204,36 +215,63 @@ class McdavidfordSpider(scrapy.Spider):
             self.logger.warning(
                 "No PROXY_URL set; Playwright will go direct and may hit 429 on the droplet."
             )
-        yield self._listing_request(0)
+        yield self._listing_request(0, warmup=True)
 
-    def _listing_request(self, start, session_id=None):
-        session_id = session_id or self._session_id
-        url = self.listing_url if start <= 0 else f"{self.listing_url}?start={start}"
-        meta = {
-            "page_start": start,
-            "proxy_session": session_id,
-            "playwright": True,
-            # Avoid Scrapy meta proxy + Playwright context proxy on the same request.
-            "skip_proxy": True,
-            # Unique context name so proxy session sticks for the crawl, and can rotate on 429/403.
-            "playwright_context": f"mcdavid_{session_id}",
-        }
+    def _playwright_meta(self, start, session_id):
         proxy = _playwright_proxy_config(
             session_id, enabled=self.settings.getbool("ENABLE_PROXY", True)
         )
         context_kwargs = {
             "user_agent": USER_AGENT,
             "ignore_https_errors": True,
+            "locale": "en-US",
+            "timezone_id": "America/Chicago",
+            "viewport": {"width": 1365, "height": 768},
+            "extra_http_headers": {
+                "Accept-Language": "en-US,en;q=0.9",
+            },
         }
         if proxy:
             context_kwargs["proxy"] = proxy
-        meta["playwright_context_kwargs"] = context_kwargs
+        return {
+            "page_start": start,
+            "proxy_session": session_id,
+            "playwright": True,
+            "skip_proxy": True,
+            "playwright_context": f"mcdavid_{session_id}",
+            "playwright_context_kwargs": context_kwargs,
+            "playwright_page_goto_kwargs": {
+                "wait_until": "domcontentloaded",
+                "timeout": 60000,
+            },
+        }
+
+    def _listing_request(self, start, session_id=None, warmup=False):
+        session_id = session_id or self._session_id
+        meta = self._playwright_meta(start, session_id)
+        if warmup and start <= 0:
+            return Request(
+                self.home_url,
+                callback=self.parse_home,
+                dont_filter=True,
+                meta=meta,
+            )
+        url = self.listing_url if start <= 0 else f"{self.listing_url}?start={start}"
         return Request(
             url,
             callback=self.parse_listing,
             dont_filter=True,
             meta=meta,
         )
+
+    def parse_home(self, response):
+        if response.status in (403, 429):
+            self._log_block_body(response)
+            nxt = self._retry_with_new_session(0, f"HTTP {response.status} on homepage")
+            if nxt:
+                yield nxt
+            return
+        yield self._listing_request(0, session_id=response.meta.get("proxy_session"))
 
     def _retry_with_new_session(self, start: int, reason: str):
         key = str(start)
@@ -255,12 +293,17 @@ class McdavidfordSpider(scrapy.Spider):
             self._session_id,
             attempts,
         )
-        return self._listing_request(start, session_id=self._session_id)
+        return self._listing_request(start, session_id=self._session_id, warmup=start <= 0)
+
+    def _log_block_body(self, response):
+        snippet = re.sub(r"\s+", " ", response.text or "")[:280]
+        self.logger.warning("HTTP %s url=%s body=%s", response.status, response.url, snippet)
 
     def parse_listing(self, response):
         page_start = int(response.meta.get("page_start") or 0)
 
         if response.status in (403, 429):
+            self._log_block_body(response)
             nxt = self._retry_with_new_session(page_start, f"HTTP {response.status}")
             if nxt:
                 yield nxt
