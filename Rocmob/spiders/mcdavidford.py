@@ -167,16 +167,16 @@ class McdavidfordSpider(scrapy.Spider):
         },
         "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
         "PLAYWRIGHT_BROWSER_TYPE": "chromium",
-        # Playwright ignores Scrapy ProxyMiddleware; proxy is applied via
-        # playwright_context_kwargs from PROXY_URL / PROXY_AUTH when ENABLE_PROXY is true.
+        # Playwright applies PROXY_URL itself. Keep Scrapy ProxyMiddleware on for
+        # settings/logging, but listing requests set skip_proxy so we do not double-proxy.
         "ENABLE_PROXY": True,
         "DOWNLOAD_DELAY": 3,
         "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
         "DOWNLOAD_TIMEOUT": 120,
         "RETRY_TIMES": 3,
-        # Handle 429 ourselves with a fresh proxy session (Scrapy retries reuse same IP).
+        # Handle 429/403 ourselves with a fresh proxy session (Scrapy retries reuse same IP).
         "RETRY_HTTP_CODES": [500, 502, 503, 504, 522, 524, 408],
-        "HTTPERROR_ALLOWED_CODES": [429],
+        "HTTPERROR_ALLOWED_CODES": [403, 429],
     }
 
     def __init__(self, *args, **kwargs):
@@ -213,7 +213,9 @@ class McdavidfordSpider(scrapy.Spider):
             "page_start": start,
             "proxy_session": session_id,
             "playwright": True,
-            # Unique context name so proxy session sticks for the crawl, and can rotate on 429.
+            # Avoid Scrapy meta proxy + Playwright context proxy on the same request.
+            "skip_proxy": True,
+            # Unique context name so proxy session sticks for the crawl, and can rotate on 429/403.
             "playwright_context": f"mcdavid_{session_id}",
         }
         proxy = _playwright_proxy_config(
@@ -258,8 +260,8 @@ class McdavidfordSpider(scrapy.Spider):
     def parse_listing(self, response):
         page_start = int(response.meta.get("page_start") or 0)
 
-        if response.status == 429:
-            nxt = self._retry_with_new_session(page_start, "HTTP 429")
+        if response.status in (403, 429):
+            nxt = self._retry_with_new_session(page_start, f"HTTP {response.status}")
             if nxt:
                 yield nxt
             return
