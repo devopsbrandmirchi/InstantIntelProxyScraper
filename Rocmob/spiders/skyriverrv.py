@@ -2,7 +2,7 @@
 Sky River RV spider (Scout RV Google feed):
   - vehicle data from the XML feed at /api/feeds/google (no pagination)
   - location from /api/inventory, /api/feeds/vla, or Google custom_label_0
-  - leftover units use Playwright (Vercel 429s curl/Bright Data HTML from the droplet)
+  - leftover units use curl_cffi on the detail URL (no proxy, no Playwright)
   - empty VIN falls back to stock number
   - upserts into Supabase scrap_rawdata
 """
@@ -100,15 +100,15 @@ class skyriverrvBrowse(scrapy.Spider):
     allowed_domains = ['skyriverrv.com']
 
     custom_settings = {
-        # APIs/feeds work from the droplet. Vercel 429s HTML for curl and Bright
-        # Data; leftover detail pages use Playwright Chromium instead.
+        # Same as a local curl: APIs and leftover detail HTML go direct.
         'ENABLE_PROXY': False,
         'DOWNLOAD_DELAY': 1,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
-        'CONCURRENT_REQUESTS_PER_DOMAIN': 4,
+        'CONCURRENT_REQUESTS_PER_DOMAIN': 2,
         'RETRY_ENABLED': True,
         'RETRY_TIMES': 2,
-        'RETRY_HTTP_CODES': [403, 429, 500, 502, 503, 504],
+        'RETRY_HTTP_CODES': [500, 502, 503, 504],
+        'HTTPERROR_ALLOWED_CODES': [429],
         'DOWNLOAD_TIMEOUT': 30,
         'DOWNLOAD_HANDLERS': {
             'http': 'scrapy_curl_cffi.handlers.CurlCffiDownloadHandler',
@@ -264,13 +264,12 @@ class skyriverrvBrowse(scrapy.Spider):
                 return self.units_by_key[keyed]
         return None
 
-    async def parse_feed(self, response):
+    def parse_feed(self, response):
         selector = Selector(text=response.text, type='xml')
         selector.remove_namespaces()
         vehicles = selector.xpath('//channel/item')
         self.logger.info('Found %s vehicles in the Google feed', len(vehicles))
         matched = 0
-        misses = []
 
         for v in vehicles:
             url = xml_field(v, 'link')
@@ -338,71 +337,43 @@ class skyriverrvBrowse(scrapy.Spider):
                 self.save_item(item)
             else:
                 self.via_detail_count += 1
-                self.logger.info(
-                    'Missing location (%s): id=%s vin=%s stock=%s labels=%r/%r url=%s',
-                    self.via_detail_count,
-                    feed_id,
-                    vin,
-                    stock_number,
-                    item['custom_label_0'],
-                    item['custom_label_1'],
+                self.logger.info('Via curl detail (%s): %s', self.via_detail_count, url)
+                yield scrapy.Request(
                     url,
+                    callback=self.parse_detail,
+                    errback=self.detail_failed,
+                    cb_kwargs={'item': item},
+                    dont_filter=True,
+                    meta={'skip_proxy': True, 'download_timeout': 30},
                 )
-                misses.append(item)
 
         self.logger.info(
-            'Feed match: %s with location, %s via Playwright detail pages',
+            'Feed match: %s with location, %s via curl detail pages',
             matched,
-            len(misses),
+            self.via_detail_count,
         )
-        if misses:
-            await self._fill_locations_playwright(misses)
-            for item in misses:
-                self.save_item(item)
 
-    async def _fill_locations_playwright(self, items):
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            self.logger.error('Playwright is not installed; cannot open leftover detail pages')
+    def detail_failed(self, failure):
+        item = (failure.request.cb_kwargs or {}).get('item')
+        if not item:
             return
+        self.logger.warning(
+            'Curl detail failed for %s (%s); saving without location',
+            item.get('url'),
+            failure.value,
+        )
+        self.save_item(item)
 
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(
-                headless=True,
-                args=['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+    def parse_detail(self, response, item):
+        if response.status == 429:
+            self.logger.warning(
+                'HTTP 429 on %s from this host (local curl works; this IP is blocked)',
+                response.url,
             )
-            context = await browser.new_context(
-                user_agent=(
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) '
-                    'Chrome/131.0.0.0 Safari/537.36'
-                ),
-                locale='en-US',
-                timezone_id='America/Los_Angeles',
-                viewport={'width': 1365, 'height': 768},
-            )
-            page = await context.new_page()
-            await page.goto(self.dealer_url, wait_until='domcontentloaded', timeout=45000)
-            for item in items:
-                try:
-                    response = await page.goto(
-                        item['url'], wait_until='domcontentloaded', timeout=45000
-                    )
-                    status = response.status if response else 0
-                    html_text = await page.content()
-                    self.apply_detail_html(item, html_text)
-                    if item['location']:
-                        self.logger.info(
-                            'Playwright location %s: %s', item['location'], item['title']
-                        )
-                    else:
-                        self.logger.warning(
-                            'Playwright HTTP %s had no location for %s', status, item['url']
-                        )
-                except Exception as exc:
-                    self.logger.warning('Playwright failed for %s (%s)', item['url'], exc)
-            await browser.close()
+            self.save_item(item)
+            return
+        self.apply_detail_html(item, response.text)
+        self.save_item(item)
 
     def apply_detail_html(self, item, html_text):
         selector = Selector(text=html_text)
