@@ -20,6 +20,7 @@ testspider/
 Rocmob/spiders/rvcountry_legacy.py
 Rocmob/spiders/skyriverrv_old_backup.py
 Rocmob/spiders/skyriverrv_old_backup2.py
+Rocmob/spiders/skyriverrv_old_backup3.py
 # Logs
 *.log
 logs/
