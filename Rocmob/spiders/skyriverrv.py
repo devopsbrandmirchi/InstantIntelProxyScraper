@@ -44,6 +44,15 @@ def clean_number(value):
     return str(value).strip()
 
 
+def url_tail(url):
+    path = (url or '').split('#', 1)[0].split('?', 1)[0].rstrip('/')
+    return path.rsplit('/', 1)[-1] if path else ''
+
+
+def lookup_key(value):
+    return str(value).strip().upper() if value else ''
+
+
 class skyriverrvBrowse(scrapy.Spider):
     name = "skyriverrv"
     allowed_domains = ['skyriverrv.com']
@@ -52,13 +61,13 @@ class skyriverrvBrowse(scrapy.Spider):
         # Feed + inventory API work from the droplet. Detail HTML is Vercel-limited
         # (429); those requests use Bright Data. API/feed set skip_proxy.
         'ENABLE_PROXY': True,
-        'DOWNLOAD_DELAY': 3,
+        'DOWNLOAD_DELAY': 1,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
-        'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
+        'CONCURRENT_REQUESTS_PER_DOMAIN': 4,
         'RETRY_ENABLED': True,
-        'RETRY_TIMES': 6,
+        'RETRY_TIMES': 2,
         'RETRY_HTTP_CODES': [403, 429, 500, 502, 503, 504],
-        'DOWNLOAD_TIMEOUT': 90,
+        'DOWNLOAD_TIMEOUT': 30,
         'DOWNLOAD_HANDLERS': {
             'http': 'scrapy_curl_cffi.handlers.CurlCffiDownloadHandler',
             'https': 'scrapy_curl_cffi.handlers.CurlCffiDownloadHandler',
@@ -71,7 +80,7 @@ class skyriverrvBrowse(scrapy.Spider):
             'scrapy.downloadermiddlewares.defaultheaders.DefaultHeadersMiddleware': None,
             'scrapy.downloadermiddlewares.useragent.UserAgentMiddleware': None,
         },
-        'CURL_CFFI_OPTIONS': {'impersonate': 'chrome131'},
+        'CURL_CFFI_OPTIONS': {'impersonate': 'chrome131', 'timeout': 20},
         'TWISTED_REACTOR': 'twisted.internet.asyncioreactor.AsyncioSelectorReactor',
     }
 
@@ -141,19 +150,20 @@ class skyriverrvBrowse(scrapy.Spider):
                 unit.get('vin'),
                 unit.get('slug'),
                 unit.get('stock_number'),
+                unit.get('name'),
             ):
-                if key:
-                    self.units_by_key[str(key).strip().upper()] = info
+                keyed = lookup_key(key)
+                if keyed:
+                    self.units_by_key[keyed] = info
 
         self.logger.info('Inventory API: %s units with location data', len(units) if isinstance(units, list) else 0)
         yield self.feed_request()
 
-    def lookup_unit(self, feed_id, vin, url, stock_number=''):
-        slug = url.rstrip('/').rsplit('/', 1)[-1]
-        url_stock = slug.rsplit('-', 1)[-1] if slug else ''
-        for key in (feed_id, vin, slug, stock_number, url_stock):
-            if key and key.upper() in self.units_by_key:
-                return self.units_by_key[key.upper()]
+    def lookup_unit(self, *candidates):
+        for key in candidates:
+            keyed = lookup_key(key)
+            if keyed and keyed in self.units_by_key:
+                return self.units_by_key[keyed]
         return None
 
     def parse_feed(self, response):
@@ -161,6 +171,7 @@ class skyriverrvBrowse(scrapy.Spider):
         selector.remove_namespaces()
         vehicles = selector.xpath('//channel/item')
         self.logger.info('Found %s vehicles in the Google feed', len(vehicles))
+        matched = 0
 
         for v in vehicles:
             def field(tag):
@@ -170,8 +181,9 @@ class skyriverrvBrowse(scrapy.Spider):
             if not url:
                 continue
 
-            feed_id = field('id')
+            feed_id = field('id') or field('guid')
             vin = (field('vin') or field('mpn')).upper()
+            slug = url_tail(url)
             raw_price = field('price').replace('USD', '').strip()
 
             mileage = field('mileage')
@@ -200,7 +212,7 @@ class skyriverrvBrowse(scrapy.Spider):
                 'custom_label_1': field('custom_label_1'),
                 'custom_label_2': field('custom_label_2'),
                 'images': [img for img in images if img][:3],
-                'stock_number': url.rstrip('/').rsplit('-', 1)[-1].upper(),
+                'stock_number': slug.rsplit('-', 1)[-1].upper() if slug else '',
                 'location': '',
                 'dealership_address': '',
                 'dealership_phone': '',
@@ -210,8 +222,18 @@ class skyriverrvBrowse(scrapy.Spider):
                 'length': '',
             }
 
-            unit = self.lookup_unit(feed_id, vin, url, item['stock_number'])
+            unit = self.lookup_unit(
+                feed_id,
+                vin,
+                slug,
+                item['stock_number'],
+                item['title'],
+                item['custom_label_0'],
+                item['custom_label_1'],
+                item['custom_label_2'],
+            )
             if unit:
+                matched += 1
                 item.update({k: val for k, val in unit.items() if val})
                 self.save_item(item)
             else:
@@ -223,7 +245,14 @@ class skyriverrvBrowse(scrapy.Spider):
                     errback=self.detail_failed,
                     cb_kwargs={'item': item},
                     dont_filter=True,
+                    meta={'download_timeout': 20},
                 )
+
+        self.logger.info(
+            'Feed match: %s from inventory API, %s via proxy',
+            matched,
+            self.via_proxy_count,
+        )
 
     def detail_failed(self, failure):
         item = (failure.request.cb_kwargs or {}).get('item')
