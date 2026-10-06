@@ -5,3 +5,4 @@ requests
 python-dotenv
 scrapy-playwright
 playwright
+scrapy-curl-cffi
