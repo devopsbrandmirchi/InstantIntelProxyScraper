@@ -80,7 +80,7 @@ class skyriverrvBrowse(scrapy.Spider):
             'scrapy.downloadermiddlewares.defaultheaders.DefaultHeadersMiddleware': None,
             'scrapy.downloadermiddlewares.useragent.UserAgentMiddleware': None,
         },
-        'CURL_CFFI_OPTIONS': {'impersonate': 'chrome131', 'timeout': 20},
+        'CURL_CFFI_OPTIONS': {'impersonate': 'chrome131'},
         'TWISTED_REACTOR': 'twisted.internet.asyncioreactor.AsyncioSelectorReactor',
     }
 
