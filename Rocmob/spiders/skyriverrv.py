@@ -2,7 +2,7 @@
 Sky River RV spider (Scout RV Google feed):
   - vehicle data from the XML feed at /api/feeds/google (no pagination)
   - location from /api/inventory, /api/feeds/vla, or Google custom_label_0
-  - remaining units use the detail page directly (no Bright Data; Vercel 429s it)
+  - leftover units use Playwright (Vercel 429s curl/Bright Data HTML from the droplet)
   - empty VIN falls back to stock number
   - upserts into Supabase scrap_rawdata
 """
@@ -32,6 +32,7 @@ LOT_LOCATION_RE = re.compile(
 )
 PAGE_STOCK_RE = re.compile(r'Stock\s*#\s*([A-Za-z0-9-]+)', re.I)
 CITY_STATE_RE = re.compile(r'^.+,\s*[A-Z]{2}$')
+STOCK_LIKE_RE = re.compile(r'^[A-Z]{1,4}\d{2,}[A-Z0-9]*$', re.I)
 
 
 def format_location(city, state):
@@ -71,13 +72,36 @@ def lot_location(value):
     return f'{found.group(1)}, CA' if found else ''
 
 
+def xml_field(node, tag):
+    raw = (
+        node.xpath(f'./*[local-name()="{tag}"][1]/text()').get()
+        or node.xpath(f'./{tag}/text()').get()
+        or ''
+    )
+    return re.sub(r'\s+', ' ', raw).strip()
+
+
+def xml_lot(node):
+    for tag in (
+        'custom_label_0',
+        'custom_label_1',
+        'custom_label_2',
+        'custom_label_3',
+        'custom_label_4',
+    ):
+        loc = lot_location(xml_field(node, tag))
+        if loc:
+            return loc
+    return ''
+
+
 class skyriverrvBrowse(scrapy.Spider):
     name = "skyriverrv"
     allowed_domains = ['skyriverrv.com']
 
     custom_settings = {
-        # APIs work from the droplet. Vercel 429s Bright Data on HTML, so detail
-        # pages go direct (same as a browser). API/feed/VLA set skip_proxy.
+        # APIs/feeds work from the droplet. Vercel 429s HTML for curl and Bright
+        # Data; leftover detail pages use Playwright Chromium instead.
         'ENABLE_PROXY': False,
         'DOWNLOAD_DELAY': 1,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
@@ -240,54 +264,55 @@ class skyriverrvBrowse(scrapy.Spider):
                 return self.units_by_key[keyed]
         return None
 
-    def parse_feed(self, response):
+    async def parse_feed(self, response):
         selector = Selector(text=response.text, type='xml')
         selector.remove_namespaces()
         vehicles = selector.xpath('//channel/item')
         self.logger.info('Found %s vehicles in the Google feed', len(vehicles))
         matched = 0
+        misses = []
 
         for v in vehicles:
-            def field(tag):
-                return re.sub(r'\s+', ' ', v.xpath(f'./{tag}/text()').get() or '').strip()
-
-            url = field('link')
+            url = xml_field(v, 'link')
             if not url:
                 continue
 
-            feed_id = field('id') or field('guid')
-            vin = (field('vin') or field('mpn')).upper()
+            feed_id = xml_field(v, 'id') or xml_field(v, 'guid')
+            vin = (xml_field(v, 'vin') or xml_field(v, 'mpn')).upper()
             slug = url_tail(url)
-            raw_price = field('price').replace('USD', '').strip()
+            raw_price = xml_field(v, 'price').replace('USD', '').strip()
+            url_stock = slug.rsplit('-', 1)[-1].upper() if slug else ''
+            stock_number = feed_id if STOCK_LIKE_RE.match(feed_id or '') else url_stock
 
-            mileage = field('mileage')
+            mileage = xml_field(v, 'mileage')
             mileage_parts = mileage.split()
-            images = [field('image_link')] + [
-                (img or '').strip() for img in v.xpath('./additional_image_link/text()').getall()
+            images = [xml_field(v, 'image_link')] + [
+                (img or '').strip()
+                for img in v.xpath('./*[local-name()="additional_image_link"]/text()').getall()
             ]
 
             item = {
                 'url': url,
-                'title': field('title'),
-                'description': re.sub(r'<[^>]+>', '', html.unescape(field('description'))).strip(),
-                'make': field('make') or field('brand'),
-                'model': field('model'),
-                'year': field('year'),
-                'type_': field('vehicle_type'),
-                'condition': field('condition').capitalize(),
+                'title': xml_field(v, 'title'),
+                'description': re.sub(r'<[^>]+>', '', html.unescape(xml_field(v, 'description'))).strip(),
+                'make': xml_field(v, 'make') or xml_field(v, 'brand'),
+                'model': xml_field(v, 'model'),
+                'year': xml_field(v, 'year'),
+                'type_': xml_field(v, 'vehicle_type'),
+                'condition': xml_field(v, 'condition').capitalize(),
                 'price': '' if raw_price in ('', '0', '0.00') else raw_price,
                 'vin': vin,
                 'mileage_value': mileage_parts[0] if mileage_parts else '',
                 'mileage_unit': mileage_parts[1] if len(mileage_parts) > 1 else '',
-                'engine': field('engine'),
-                'fuel_type': field('fuel_type').capitalize(),
-                'transmission': field('transmission'),
-                'custom_label_0': field('custom_label_0'),
-                'custom_label_1': field('custom_label_1'),
-                'custom_label_2': field('custom_label_2'),
+                'engine': xml_field(v, 'engine'),
+                'fuel_type': xml_field(v, 'fuel_type').capitalize(),
+                'transmission': xml_field(v, 'transmission'),
+                'custom_label_0': xml_field(v, 'custom_label_0'),
+                'custom_label_1': xml_field(v, 'custom_label_1'),
+                'custom_label_2': xml_field(v, 'custom_label_2'),
                 'images': [img for img in images if img][:3],
-                'stock_number': slug.rsplit('-', 1)[-1].upper() if slug else '',
-                'location': '',
+                'stock_number': stock_number,
+                'location': xml_lot(v),
                 'dealership_address': '',
                 'dealership_phone': '',
                 'trim': '',
@@ -296,16 +321,12 @@ class skyriverrvBrowse(scrapy.Spider):
                 'length': '',
             }
 
-            item['location'] = (
-                lot_location(item['custom_label_0'])
-                or lot_location(item['custom_label_1'])
-            )
-
             unit = self.lookup_unit(
                 feed_id,
                 vin,
                 slug,
-                item['stock_number'],
+                stock_number,
+                url_stock,
                 item['title'],
                 url,
             )
@@ -317,37 +338,75 @@ class skyriverrvBrowse(scrapy.Spider):
                 self.save_item(item)
             else:
                 self.via_detail_count += 1
-                self.logger.info('Via detail page (%s): %s', self.via_detail_count, url)
-                yield scrapy.Request(
+                self.logger.info(
+                    'Missing location (%s): id=%s vin=%s stock=%s labels=%r/%r url=%s',
+                    self.via_detail_count,
+                    feed_id,
+                    vin,
+                    stock_number,
+                    item['custom_label_0'],
+                    item['custom_label_1'],
                     url,
-                    callback=self.parse_detail,
-                    errback=self.detail_failed,
-                    cb_kwargs={'item': item},
-                    dont_filter=True,
-                    meta={'skip_proxy': True, 'download_timeout': 20},
                 )
+                misses.append(item)
 
         self.logger.info(
-            'Feed match: %s with location, %s via detail pages',
+            'Feed match: %s with location, %s via Playwright detail pages',
             matched,
-            self.via_detail_count,
+            len(misses),
         )
+        if misses:
+            await self._fill_locations_playwright(misses)
+            for item in misses:
+                self.save_item(item)
 
-    def detail_failed(self, failure):
-        item = (failure.request.cb_kwargs or {}).get('item')
-        if not item:
+    async def _fill_locations_playwright(self, items):
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            self.logger.error('Playwright is not installed; cannot open leftover detail pages')
             return
-        retries = (failure.request.meta or {}).get('retry_times', 0)
-        self.logger.warning(
-            'Detail page failed for %s after %s retries (%s); saving without location as last resort',
-            item.get('url'),
-            retries,
-            failure.value,
-        )
-        self.save_item(item)
 
-    def parse_detail(self, response, item):
-        text = response.text.replace('\\"', '"')
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+            )
+            context = await browser.new_context(
+                user_agent=(
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/131.0.0.0 Safari/537.36'
+                ),
+                locale='en-US',
+                timezone_id='America/Los_Angeles',
+                viewport={'width': 1365, 'height': 768},
+            )
+            page = await context.new_page()
+            await page.goto(self.dealer_url, wait_until='domcontentloaded', timeout=45000)
+            for item in items:
+                try:
+                    response = await page.goto(
+                        item['url'], wait_until='domcontentloaded', timeout=45000
+                    )
+                    status = response.status if response else 0
+                    html_text = await page.content()
+                    self.apply_detail_html(item, html_text)
+                    if item['location']:
+                        self.logger.info(
+                            'Playwright location %s: %s', item['location'], item['title']
+                        )
+                    else:
+                        self.logger.warning(
+                            'Playwright HTTP %s had no location for %s', status, item['url']
+                        )
+                except Exception as exc:
+                    self.logger.warning('Playwright failed for %s (%s)', item['url'], exc)
+            await browser.close()
+
+    def apply_detail_html(self, item, html_text):
+        selector = Selector(text=html_text)
+        text = html_text.replace('\\"', '"')
         match = DETAIL_LOCATION_RE.search(text)
         if match:
             block = match.group(1)
@@ -357,11 +416,13 @@ class skyriverrvBrowse(scrapy.Spider):
                 return found.group(1) if found else ''
 
             item['location'] = format_location(grab('city'), grab('state'))
-            item['dealership_address'] = format_address(grab('address'), grab('city'), grab('state'), grab('zip'))
+            item['dealership_address'] = format_address(
+                grab('address'), grab('city'), grab('state'), grab('zip')
+            )
             item['dealership_phone'] = grab('phone')
 
         if not item['location']:
-            badge = response.xpath(
+            badge = selector.xpath(
                 '//span[@data-slot="badge"][.//svg/path[starts-with(@d, "M15 11a3 3")]]//text()'
             ).getall()
             item['location'] = (
@@ -369,15 +430,15 @@ class skyriverrvBrowse(scrapy.Spider):
                 or lot_location(text[:8000])
             )
 
-        stock = response.xpath('//dt[normalize-space()="Stock Number"]/following-sibling::dd[1]/text()').get()
+        stock = selector.xpath(
+            '//dt[normalize-space()="Stock Number"]/following-sibling::dd[1]/text()'
+        ).get()
         if stock and stock.strip():
             item['stock_number'] = stock.strip()
-        elif not item.get('stock_number') or len(item['stock_number']) < 3:
+        elif not item.get('stock_number') or not STOCK_LIKE_RE.match(item['stock_number']):
             found_stock = PAGE_STOCK_RE.search(text)
             if found_stock:
                 item['stock_number'] = found_stock.group(1)
-
-        self.save_item(item)
 
     def save_item(self, item):
         url = item['url']
