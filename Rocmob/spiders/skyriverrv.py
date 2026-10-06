@@ -1,15 +1,16 @@
 """
 Sky River RV spider (Scout RV Google feed):
   - vehicle data from the XML feed at /api/feeds/google (no pagination)
-  - location per unit from /api/inventory (multi-lot dealer); units missing
-    there fall back to the location block on the unit detail page
+  - location from /api/inventory, /api/feeds/vla, or Google custom_label_0
+  - remaining units use the detail page directly (no Bright Data; Vercel 429s it)
   - empty VIN falls back to stock number
-  - curl_cffi gets past the Vercel security checkpoint on detail pages
   - upserts into Supabase scrap_rawdata
 """
 
+import csv
 import hashlib
 import html
+import io
 import json
 import re
 from datetime import datetime, timezone
@@ -21,9 +22,16 @@ from Rocmob.rocmob_cfg import supabase
 
 BASE_URL = 'https://www.skyriverrv.com'
 FEED_URL = f'{BASE_URL}/api/feeds/google'
+VLA_FEED_URL = f'{BASE_URL}/api/feeds/vla'
 INVENTORY_API_URL = f'{BASE_URL}/api/inventory'
 
 DETAIL_LOCATION_RE = re.compile(r'"location":\{"id":"[^"]+"(.*?)\}', re.S)
+LOT_LOCATION_RE = re.compile(
+    r'(Atascadero|Paso Robles|Pismo Beach|Santa Maria|Fresno),?\s*CA',
+    re.I,
+)
+PAGE_STOCK_RE = re.compile(r'Stock\s*#\s*([A-Za-z0-9-]+)', re.I)
+CITY_STATE_RE = re.compile(r'^.+,\s*[A-Z]{2}$')
 
 
 def format_location(city, state):
@@ -53,14 +61,24 @@ def lookup_key(value):
     return str(value).strip().upper() if value else ''
 
 
+def lot_location(value):
+    text = (value or '').strip()
+    if not text:
+        return ''
+    if CITY_STATE_RE.match(text):
+        return text
+    found = LOT_LOCATION_RE.search(text)
+    return f'{found.group(1)}, CA' if found else ''
+
+
 class skyriverrvBrowse(scrapy.Spider):
     name = "skyriverrv"
     allowed_domains = ['skyriverrv.com']
 
     custom_settings = {
-        # Feed + inventory API work from the droplet. Detail HTML is Vercel-limited
-        # (429); those requests use Bright Data. API/feed set skip_proxy.
-        'ENABLE_PROXY': True,
+        # APIs work from the droplet. Vercel 429s Bright Data on HTML, so detail
+        # pages go direct (same as a browser). API/feed/VLA set skip_proxy.
+        'ENABLE_PROXY': False,
         'DOWNLOAD_DELAY': 1,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 4,
@@ -94,12 +112,12 @@ class skyriverrvBrowse(scrapy.Spider):
         super().__init__(*args, **kwargs)
         self.creation_date = datetime.now(timezone.utc).date().isoformat()
         self.inserted_count = 0
-        self.via_proxy_count = 0
+        self.via_detail_count = 0
         self.saved_without_location_count = 0
         self.units_by_key = {}
 
     def closed(self, reason):
-        self.logger.info('Went through proxy: %s', self.via_proxy_count)
+        self.logger.info('Went through detail pages: %s', self.via_detail_count)
         self.logger.info('Saved without location: %s', self.saved_without_location_count)
         self.logger.info('Total inventory inserted: %s', self.inserted_count)
 
@@ -108,6 +126,15 @@ class skyriverrvBrowse(scrapy.Spider):
             INVENTORY_API_URL,
             callback=self.parse_inventory_api,
             errback=self.inventory_api_failed,
+            dont_filter=True,
+            meta={'skip_proxy': True},
+        )
+
+    def vla_request(self):
+        return scrapy.Request(
+            VLA_FEED_URL,
+            callback=self.parse_vla,
+            errback=self.vla_failed,
             dont_filter=True,
             meta={'skip_proxy': True},
         )
@@ -121,8 +148,25 @@ class skyriverrvBrowse(scrapy.Spider):
         )
 
     def inventory_api_failed(self, failure):
-        self.logger.warning('Inventory API failed (%s); locations will come from detail pages', failure.value)
+        self.logger.warning('Inventory API failed (%s); trying VLA feed for locations', failure.value)
+        yield self.vla_request()
+
+    def vla_failed(self, failure):
+        self.logger.warning('VLA feed failed (%s); locations will come from labels or detail pages', failure.value)
         yield self.feed_request()
+
+    def _index_info(self, info, *keys):
+        for key in keys:
+            keyed = lookup_key(key)
+            if not keyed:
+                continue
+            existing = self.units_by_key.get(keyed)
+            if existing is None:
+                self.units_by_key[keyed] = info
+                continue
+            for field, val in info.items():
+                if val and not existing.get(field):
+                    existing[field] = val
 
     def parse_inventory_api(self, response):
         try:
@@ -145,18 +189,48 @@ class skyriverrvBrowse(scrapy.Spider):
                 'dry_weight': clean_number(unit.get('dry_weight_lbs') or unit.get('dry_weight')),
                 'length': clean_number(unit.get('length_ft')),
             }
-            for key in (
+            self._index_info(
+                info,
                 unit.get('id'),
                 unit.get('vin'),
                 unit.get('slug'),
                 unit.get('stock_number'),
                 unit.get('name'),
-            ):
-                keyed = lookup_key(key)
-                if keyed:
-                    self.units_by_key[keyed] = info
+            )
 
         self.logger.info('Inventory API: %s units with location data', len(units) if isinstance(units, list) else 0)
+        yield self.vla_request()
+
+    def parse_vla(self, response):
+        try:
+            rows = list(csv.DictReader(io.StringIO(response.text)))
+        except Exception as exc:
+            self.logger.warning('VLA feed was not CSV (%s)', exc)
+            rows = []
+
+        for row in rows:
+            link = (row.get('link') or '').strip()
+            info = {
+                'location': lot_location(row.get('custom_label_0')),
+                'dealership_address': '',
+                'dealership_phone': '',
+                'stock_number': (row.get('id') or '').strip(),
+                'trim': (row.get('trim') or '').strip(),
+                'sleeps': '',
+                'dry_weight': '',
+                'length': '',
+            }
+            if not info['location']:
+                continue
+            self._index_info(
+                info,
+                row.get('id'),
+                row.get('vin'),
+                url_tail(link),
+                link,
+            )
+
+        self.logger.info('VLA feed: indexed %s rows with location', len(rows))
         yield self.feed_request()
 
     def lookup_unit(self, *candidates):
@@ -222,36 +296,41 @@ class skyriverrvBrowse(scrapy.Spider):
                 'length': '',
             }
 
+            item['location'] = (
+                lot_location(item['custom_label_0'])
+                or lot_location(item['custom_label_1'])
+            )
+
             unit = self.lookup_unit(
                 feed_id,
                 vin,
                 slug,
                 item['stock_number'],
                 item['title'],
-                item['custom_label_0'],
-                item['custom_label_1'],
-                item['custom_label_2'],
+                url,
             )
             if unit:
-                matched += 1
                 item.update({k: val for k, val in unit.items() if val})
+
+            if item['location']:
+                matched += 1
                 self.save_item(item)
             else:
-                self.via_proxy_count += 1
-                self.logger.info('Via proxy (%s): %s', self.via_proxy_count, url)
+                self.via_detail_count += 1
+                self.logger.info('Via detail page (%s): %s', self.via_detail_count, url)
                 yield scrapy.Request(
                     url,
                     callback=self.parse_detail,
                     errback=self.detail_failed,
                     cb_kwargs={'item': item},
                     dont_filter=True,
-                    meta={'download_timeout': 20},
+                    meta={'skip_proxy': True, 'download_timeout': 20},
                 )
 
         self.logger.info(
-            'Feed match: %s from inventory API, %s via proxy',
+            'Feed match: %s with location, %s via detail pages',
             matched,
-            self.via_proxy_count,
+            self.via_detail_count,
         )
 
     def detail_failed(self, failure):
@@ -285,11 +364,18 @@ class skyriverrvBrowse(scrapy.Spider):
             badge = response.xpath(
                 '//span[@data-slot="badge"][.//svg/path[starts-with(@d, "M15 11a3 3")]]//text()'
             ).getall()
-            item['location'] = ' '.join(t.strip() for t in badge if t.strip())
+            item['location'] = (
+                lot_location(' '.join(t.strip() for t in badge if t.strip()))
+                or lot_location(text[:8000])
+            )
 
         stock = response.xpath('//dt[normalize-space()="Stock Number"]/following-sibling::dd[1]/text()').get()
         if stock and stock.strip():
             item['stock_number'] = stock.strip()
+        elif not item.get('stock_number') or len(item['stock_number']) < 3:
+            found_stock = PAGE_STOCK_RE.search(text)
+            if found_stock:
+                item['stock_number'] = found_stock.group(1)
 
         self.save_item(item)
 
