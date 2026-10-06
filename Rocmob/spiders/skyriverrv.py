@@ -49,18 +49,22 @@ class skyriverrvBrowse(scrapy.Spider):
     allowed_domains = ['skyriverrv.com']
 
     custom_settings = {
-        'ENABLE_PROXY': False,
-        'DOWNLOAD_DELAY': 1,
-        'CONCURRENT_REQUESTS_PER_DOMAIN': 2,
+        # Feed + inventory API work from the droplet. Detail HTML is Vercel-limited
+        # (429); those requests use Bright Data. API/feed set skip_proxy.
+        'ENABLE_PROXY': True,
+        'DOWNLOAD_DELAY': 3,
+        'RANDOMIZE_DOWNLOAD_DELAY': True,
+        'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
         'RETRY_ENABLED': True,
-        'RETRY_TIMES': 5,
-        'RETRY_HTTP_CODES': [429, 500, 502, 503, 504],
+        'RETRY_TIMES': 6,
+        'RETRY_HTTP_CODES': [403, 429, 500, 502, 503, 504],
         'DOWNLOAD_TIMEOUT': 90,
         'DOWNLOAD_HANDLERS': {
             'http': 'scrapy_curl_cffi.handlers.CurlCffiDownloadHandler',
             'https': 'scrapy_curl_cffi.handlers.CurlCffiDownloadHandler',
         },
         'DOWNLOADER_MIDDLEWARES': {
+            'Rocmob.middlewares.ProxyMiddleware': 100,
             'scrapy_curl_cffi.middlewares.CurlCffiMiddleware': 200,
             'scrapy_curl_cffi.middlewares.DefaultHeadersMiddleware': 400,
             'scrapy_curl_cffi.middlewares.UserAgentMiddleware': 500,
@@ -81,9 +85,13 @@ class skyriverrvBrowse(scrapy.Spider):
         super().__init__(*args, **kwargs)
         self.creation_date = datetime.now(timezone.utc).date().isoformat()
         self.inserted_count = 0
+        self.via_proxy_count = 0
+        self.saved_without_location_count = 0
         self.units_by_key = {}
 
     def closed(self, reason):
+        self.logger.info('Went through proxy: %s', self.via_proxy_count)
+        self.logger.info('Saved without location: %s', self.saved_without_location_count)
         self.logger.info('Total inventory inserted: %s', self.inserted_count)
 
     def start_requests(self):
@@ -92,10 +100,16 @@ class skyriverrvBrowse(scrapy.Spider):
             callback=self.parse_inventory_api,
             errback=self.inventory_api_failed,
             dont_filter=True,
+            meta={'skip_proxy': True},
         )
 
     def feed_request(self):
-        return scrapy.Request(FEED_URL, callback=self.parse_feed, dont_filter=True)
+        return scrapy.Request(
+            FEED_URL,
+            callback=self.parse_feed,
+            dont_filter=True,
+            meta={'skip_proxy': True},
+        )
 
     def inventory_api_failed(self, failure):
         self.logger.warning('Inventory API failed (%s); locations will come from detail pages', failure.value)
@@ -122,16 +136,22 @@ class skyriverrvBrowse(scrapy.Spider):
                 'dry_weight': clean_number(unit.get('dry_weight_lbs') or unit.get('dry_weight')),
                 'length': clean_number(unit.get('length_ft')),
             }
-            for key in (unit.get('id'), unit.get('vin'), unit.get('slug')):
+            for key in (
+                unit.get('id'),
+                unit.get('vin'),
+                unit.get('slug'),
+                unit.get('stock_number'),
+            ):
                 if key:
                     self.units_by_key[str(key).strip().upper()] = info
 
         self.logger.info('Inventory API: %s units with location data', len(units) if isinstance(units, list) else 0)
         yield self.feed_request()
 
-    def lookup_unit(self, feed_id, vin, url):
+    def lookup_unit(self, feed_id, vin, url, stock_number=''):
         slug = url.rstrip('/').rsplit('/', 1)[-1]
-        for key in (feed_id, vin, slug):
+        url_stock = slug.rsplit('-', 1)[-1] if slug else ''
+        for key in (feed_id, vin, slug, stock_number, url_stock):
             if key and key.upper() in self.units_by_key:
                 return self.units_by_key[key.upper()]
         return None
@@ -190,12 +210,33 @@ class skyriverrvBrowse(scrapy.Spider):
                 'length': '',
             }
 
-            unit = self.lookup_unit(feed_id, vin, url)
+            unit = self.lookup_unit(feed_id, vin, url, item['stock_number'])
             if unit:
                 item.update({k: val for k, val in unit.items() if val})
                 self.save_item(item)
             else:
-                yield scrapy.Request(url, callback=self.parse_detail, cb_kwargs={'item': item})
+                self.via_proxy_count += 1
+                self.logger.info('Via proxy (%s): %s', self.via_proxy_count, url)
+                yield scrapy.Request(
+                    url,
+                    callback=self.parse_detail,
+                    errback=self.detail_failed,
+                    cb_kwargs={'item': item},
+                    dont_filter=True,
+                )
+
+    def detail_failed(self, failure):
+        item = (failure.request.cb_kwargs or {}).get('item')
+        if not item:
+            return
+        retries = (failure.request.meta or {}).get('retry_times', 0)
+        self.logger.warning(
+            'Detail page failed for %s after %s retries (%s); saving without location as last resort',
+            item.get('url'),
+            retries,
+            failure.value,
+        )
+        self.save_item(item)
 
     def parse_detail(self, response, item):
         text = response.text.replace('\\"', '"')
@@ -298,6 +339,14 @@ class skyriverrvBrowse(scrapy.Spider):
                 row, on_conflict='sk,creation_date'
             ).execute()
             self.inserted_count += 1
-            self.logger.info('Upserted: %s', title)
+            if not location:
+                self.saved_without_location_count += 1
+                self.logger.warning(
+                    'Saved without location (%s): %s',
+                    self.saved_without_location_count,
+                    title,
+                )
+            else:
+                self.logger.info('Upserted: %s', title)
         except Exception as db_err:
             self.logger.error('Supabase error for VIN %s: %s', vin, db_err)
